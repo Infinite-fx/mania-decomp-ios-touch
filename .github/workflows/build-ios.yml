@@ -6,8 +6,15 @@ name: Build iOS (unsigned, no game assets)
 
 on:
   push:
+    paths-ignore: ['**.md']
   pull_request:
+    paths-ignore: ['**.md']
   workflow_dispatch:
+
+# a newer push cancels the build that is still waiting / running
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   MANIA_COMMIT: 9dc699428420d752af9767bdb13f585ee0881bc0  # Sonic-Mania-Decompilation v1.1.1
