@@ -1,0 +1,251 @@
+diff --git a/SonicMania/Game.h b/SonicMania/Game.h
+index c1c94c9..389234f 100644
+--- a/SonicMania/Game.h
++++ b/SonicMania/Game.h
+@@ -88,6 +88,10 @@
+ // -------------------------
+ 
+ #include "GameLink.h"
++
++#if MANIA_MOBILE_TOUCH
++#include "MobileTouchHints.h"
++#endif
+ #include "GameVariables.h"
+ #include "GameObjects.h"
+ 
+diff --git a/SonicMania/MobileTouchHints.h b/SonicMania/MobileTouchHints.h
+new file mode 100644
+index 0000000..f430291
+--- /dev/null
++++ b/SonicMania/MobileTouchHints.h
+@@ -0,0 +1,40 @@
++#ifndef MOBILE_TOUCH_HINTS_H
++#define MOBILE_TOUCH_HINTS_H
++
++// Shared between the game logic and the engine's on-screen touch controls (iOS build only).
++// The game "marks" a field with the current engine frame whenever something is possible
++// (gameplay running, super form available, character swap available, cutscene skippable...).
++// The engine treats a mark as valid for a few frames, so the controls appear/disappear smoothly.
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum MobileTouchModes {
++    MTOUCH_MODE_NONE,
++    MTOUCH_MODE_PLATFORM, // regular gameplay: d-pad + jump (+ contextual buttons)
++    MTOUCH_MODE_SPECIAL,  // UFO / blue sphere stages: d-pad + jump
++    MTOUCH_MODE_PUYO,     // mean bean: d-pad + two rotate buttons
++    MTOUCH_MODE_PINBALL,  // pinball bonus stage: two flipper buttons
++};
++
++typedef struct {
++    unsigned int frame;      // advanced by the engine once per frame
++    unsigned int playFrame;  // last frame a player-1 input routine ran
++    unsigned int superFrame; // last frame super transformation was possible
++    unsigned int swapFrame;  // last frame an encore character swap was possible
++    unsigned int swapAvailFrame; // last frame encore swapping exists at all (a buddy is around)
++    unsigned int skipFrame;  // last frame the running cutscene was skippable
++    unsigned int menuFrame;  // last frame the pause menu was open
++    int mode;
++} MobileTouchHints;
++
++extern MobileTouchHints mobileTouchHints;
++
++#define MOBILETOUCH_MARK(field) (mobileTouchHints.field = mobileTouchHints.frame)
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif // MOBILE_TOUCH_HINTS_H
+diff --git a/SonicMania/Objects/BSS/BSS_Player.c b/SonicMania/Objects/BSS/BSS_Player.c
+index f06ad10..2d467bd 100644
+--- a/SonicMania/Objects/BSS/BSS_Player.c
++++ b/SonicMania/Objects/BSS/BSS_Player.c
+@@ -170,6 +170,13 @@ void BSS_Player_Input_P1(void)
+         RSDKControllerState *controller = &ControllerInfo[self->controllerID];
+         RSDKAnalogState *stick          = &AnalogStickInfoL[self->controllerID];
+ 
++#if MANIA_MOBILE_TOUCH
++        if (self->controllerID <= CONT_P1) { // UFO stages read CONT_ANY
++            mobileTouchHints.mode = MTOUCH_MODE_SPECIAL;
++            MOBILETOUCH_MARK(playFrame);
++        }
++#endif
++
+         self->up    = controller->keyUp.down;
+         self->down  = controller->keyDown.down;
+         self->left  = controller->keyLeft.down;
+diff --git a/SonicMania/Objects/Cutscene/CutsceneSeq.c b/SonicMania/Objects/Cutscene/CutsceneSeq.c
+index d003760..7780a72 100644
+--- a/SonicMania/Objects/Cutscene/CutsceneSeq.c
++++ b/SonicMania/Objects/Cutscene/CutsceneSeq.c
+@@ -134,6 +134,11 @@ void CutsceneSeq_CheckSkip(uint8 skipType, EntityCutsceneSeq *seq, void (*skipCa
+ {
+     bool32 skipPress = ControllerInfo->keyStart.press;
+ 
++#if MANIA_MOBILE_TOUCH
++    if (skipType && (SceneInfo->state & ENGINESTATE_REGULAR))
++        MOBILETOUCH_MARK(skipFrame);
++#endif
++
+     if (skipType && skipPress && (SceneInfo->state & ENGINESTATE_REGULAR)) {
+         bool32 loadNewScene = false;
+ 
+diff --git a/SonicMania/Objects/Global/PauseMenu.c b/SonicMania/Objects/Global/PauseMenu.c
+index 3310ba7..a5ecb37 100644
+--- a/SonicMania/Objects/Global/PauseMenu.c
++++ b/SonicMania/Objects/Global/PauseMenu.c
+@@ -13,6 +13,10 @@ void PauseMenu_Update(void)
+ {
+     RSDK_THIS(PauseMenu);
+ 
++#if MANIA_MOBILE_TOUCH
++    MOBILETOUCH_MARK(menuFrame);
++#endif
++
+     StateMachine_Run(self->state);
+ 
+     self->position.x = (ScreenInfo->position.x + ScreenInfo->center.x) << 16;
+diff --git a/SonicMania/Objects/Global/Player.c b/SonicMania/Objects/Global/Player.c
+index d158186..eecf9a1 100644
+--- a/SonicMania/Objects/Global/Player.c
++++ b/SonicMania/Objects/Global/Player.c
+@@ -6387,6 +6387,40 @@ void Player_SfxUpdate_RaySwoop(int32 sfxID)
+ }
+ #endif
+ 
++#if MANIA_MOBILE_TOUCH
++// on-screen controls: report what the player can do right now so the engine can show the matching buttons
++static void Player_MobileTouch_Report(EntityPlayer *self)
++{
++    if (self->controllerID != CONT_P1)
++        return;
++
++    mobileTouchHints.mode = MTOUCH_MODE_PLATFORM;
++    MOBILETOUCH_MARK(playFrame);
++
++    bool32 timeOK = SceneInfo->timeEnabled || ERZStart;
++    if (timeOK && self->jumpAbilityState == 1 && self->superState < SUPERSTATE_SUPER && self->rings >= 50
++        && SaveGame_GetSaveRAM()->collectedEmeralds == 0b01111111) {
++#if MANIA_USE_PLUS
++        if (!Player->canSuperCB || Player->canSuperCB(true))
++#endif
++            MOBILETOUCH_MARK(superFrame);
++    }
++
++#if MANIA_USE_PLUS
++    if (globals->gameMode == MODE_ENCORE && !Player->cantSwap && RSDK_GET_ENTITY(SLOT_PLAYER2, Player)->classID == Player->classID)
++        MOBILETOUCH_MARK(swapAvailFrame);
++
++    if (globals->gameMode == MODE_ENCORE && !HUD->swapCooldown && !Player->cantSwap && !Player->respawnTimer && SceneInfo->timeEnabled
++        && self->drawGroup != 2 && Player_CheckValidState(self)) {
++        EntityPlayer *sidekick = RSDK_GET_ENTITY(SLOT_PLAYER2, Player);
++        if (sidekick->classID == Player->classID && (self->state == Player_State_Ground || self->state == Player_State_Roll)
++            && (sidekick->state == Player_State_Ground || sidekick->state == Player_State_Roll))
++            MOBILETOUCH_MARK(swapFrame);
++    }
++#endif
++}
++#endif
++
+ void Player_Input_P1(void)
+ {
+     RSDK_THIS(Player);
+@@ -6396,6 +6430,10 @@ void Player_Input_P1(void)
+             RSDKControllerState *controller = &ControllerInfo[self->controllerID];
+             RSDKAnalogState *stick          = &AnalogStickInfoL[self->controllerID];
+ 
++#if MANIA_MOBILE_TOUCH
++            Player_MobileTouch_Report(self);
++#endif
++
+             self->up    = controller->keyUp.down;
+             self->down  = controller->keyDown.down;
+             self->left  = controller->keyLeft.down;
+diff --git a/SonicMania/Objects/PGZ/HeavyShinobi.c b/SonicMania/Objects/PGZ/HeavyShinobi.c
+index 69e20dc..dc80eff 100644
+--- a/SonicMania/Objects/PGZ/HeavyShinobi.c
++++ b/SonicMania/Objects/PGZ/HeavyShinobi.c
+@@ -318,7 +318,7 @@ void HeavyShinobi_State_Init(void)
+         self->timer = 0;
+ 
+         Zone->playerBoundActiveR[0] = true;
+-        Zone->cameraBoundsR[0]      = ScreenInfo->center.x + 80 + (self->position.x >> 16);
++        Zone->cameraBoundsR[0]      = WIDE_SCR_XCENTER + 80 + (self->position.x >> 16); // fixed arena size, independent of screen width
+         Zone->playerBoundActiveB[0] = true;
+         Zone->cameraBoundsB[0]      = (self->position.y >> 16) + 68;
+ 
+@@ -339,7 +339,7 @@ void HeavyShinobi_State_SetupArena(void)
+ 
+     if (RSDK_GET_ENTITY(SLOT_PLAYER1, Player)->position.x > self->position.x - 0x500000) {
+         Zone->playerBoundActiveL[0] = true;
+-        Zone->cameraBoundsL[0]      = (self->position.x >> 16) - ScreenInfo->center.x - 80;
++        Zone->cameraBoundsL[0]      = (self->position.x >> 16) - WIDE_SCR_XCENTER - 80;
+ 
+         int32 y = (Zone->cameraBoundsB[0] - 376) << 16;
+ 
+@@ -363,7 +363,7 @@ void HeavyShinobi_State_StartFight(void)
+ 
+     if (RSDK_GET_ENTITY(SLOT_PLAYER1, Player)->position.x > self->position.x) {
+         Zone->playerBoundActiveL[0] = true;
+-        Zone->cameraBoundsL[0]      = (self->position.x >> 16) - ScreenInfo->center.x - 80;
++        Zone->cameraBoundsL[0]      = (self->position.x >> 16) - WIDE_SCR_XCENTER - 80;
+ 
+         Music_TransitionTrack(TRACK_HBHBOSS, 0.0125);
+         self->visible = true;
+diff --git a/SonicMania/Objects/Pinball/PBL_Player.c b/SonicMania/Objects/Pinball/PBL_Player.c
+index 254f71c..d23b1e7 100644
+--- a/SonicMania/Objects/Pinball/PBL_Player.c
++++ b/SonicMania/Objects/Pinball/PBL_Player.c
+@@ -170,6 +170,13 @@ void PBL_Player_Input_P1(void)
+         RSDKControllerState *controller = &ControllerInfo[self->controllerID];
+         RSDKAnalogState *stick          = &AnalogStickInfoL[self->controllerID];
+ 
++#if MANIA_MOBILE_TOUCH
++        if (self->controllerID <= CONT_P1) { // UFO stages read CONT_ANY
++            mobileTouchHints.mode = MTOUCH_MODE_PINBALL;
++            MOBILETOUCH_MARK(playFrame);
++        }
++#endif
++
+         self->up    = controller->keyUp.down;
+         self->down  = controller->keyDown.down;
+         self->left  = controller->keyLeft.down;
+diff --git a/SonicMania/Objects/Puyo/PuyoBean.c b/SonicMania/Objects/Puyo/PuyoBean.c
+index e2a7d07..cdcdcec 100644
+--- a/SonicMania/Objects/Puyo/PuyoBean.c
++++ b/SonicMania/Objects/Puyo/PuyoBean.c
+@@ -106,6 +106,13 @@ void PuyoBean_Input_Player(void)
+         RSDKControllerState *controller = &ControllerInfo[self->controllerID];
+         RSDKAnalogState *stick          = &AnalogStickInfoL[self->controllerID];
+ 
++#if MANIA_MOBILE_TOUCH
++        if (self->controllerID <= CONT_P1) { // UFO stages read CONT_ANY
++            mobileTouchHints.mode = MTOUCH_MODE_PUYO;
++            MOBILETOUCH_MARK(playFrame);
++        }
++#endif
++
+         self->down  = controller->keyDown.down;
+         self->left  = controller->keyLeft.down;
+         self->right = controller->keyRight.down;
+diff --git a/SonicMania/Objects/UFO/UFO_Player.c b/SonicMania/Objects/UFO/UFO_Player.c
+index 4a588df..fef08fd 100644
+--- a/SonicMania/Objects/UFO/UFO_Player.c
++++ b/SonicMania/Objects/UFO/UFO_Player.c
+@@ -201,6 +201,13 @@ void UFO_Player_Input_P1(void)
+         RSDKControllerState *controller = &ControllerInfo[self->controllerID];
+         RSDKAnalogState *stick          = &AnalogStickInfoL[self->controllerID];
+ 
++#if MANIA_MOBILE_TOUCH
++        if (self->controllerID <= CONT_P1) { // UFO stages read CONT_ANY
++            mobileTouchHints.mode = MTOUCH_MODE_SPECIAL;
++            MOBILETOUCH_MARK(playFrame);
++        }
++#endif
++
+         self->up    = controller->keyUp.down;
+         self->down  = controller->keyDown.down;
+         self->left  = controller->keyLeft.down;

@@ -1,0 +1,2063 @@
+diff --git a/RSDKv5/RSDK/Core/Reader.cpp b/RSDKv5/RSDK/Core/Reader.cpp
+index 32e3b43..3e68f91 100644
+--- a/RSDKv5/RSDK/Core/Reader.cpp
++++ b/RSDKv5/RSDK/Core/Reader.cpp
+@@ -113,6 +113,16 @@ bool32 RSDK::LoadDataPack(const char *filePath, size_t fileOffset, bool32 useBuf
+     char dataPackPath[0x100];
+     sprintf_s(dataPackPath, sizeof(dataPackPath), "%s%s", SKU::userFileDir, filePath);
+ 
++#if RETRO_PLATFORM == RETRO_iOS
++    {
++        FILE *test = fopen(dataPackPath, "rb");
++        if (test)
++            fclose(test);
++        else
++            sprintf_s(dataPackPath, sizeof(dataPackPath), "%s/%s", getBundleResourcesPath(), filePath);
++    }
++#endif
++
+     InitFileInfo(&info);
+     info.externalFile = true;
+     if (LoadFile(&info, dataPackPath, FMODE_RB)) {
+diff --git a/RSDKv5/RSDK/Core/RetroEngine.hpp b/RSDKv5/RSDK/Core/RetroEngine.hpp
+index 6d6c352..550713e 100644
+--- a/RSDKv5/RSDK/Core/RetroEngine.hpp
++++ b/RSDKv5/RSDK/Core/RetroEngine.hpp
+@@ -196,6 +196,7 @@ enum GameRegions {
+ #define RETRO_INPUTDEVICE_SDL2   (0)
+ #define RETRO_INPUTDEVICE_GLFW   (0)
+ #define RETRO_INPUTDEVICE_PDBOAT (0)
++#define RETRO_INPUTDEVICE_TOUCH  (0) // on-screen touch controls (iOS)
+ 
+ // ============================
+ // USER CORE BACKENDS
+@@ -417,6 +418,11 @@ enum GameRegions {
+ #undef RETRO_INPUTDEVICE_SDL2
+ #define RETRO_INPUTDEVICE_SDL2 (1)
+ 
++#if RETRO_PLATFORM == RETRO_iOS
++#undef RETRO_INPUTDEVICE_TOUCH
++#define RETRO_INPUTDEVICE_TOUCH (1)
++#endif
++
+ #endif
+ 
+ #if RETRO_PLATFORM == RETRO_WIN || RETRO_PLATFORM == RETRO_UWP
+diff --git a/RSDKv5/RSDK/Graphics/SDL2/SDL2RenderDevice.cpp b/RSDKv5/RSDK/Graphics/SDL2/SDL2RenderDevice.cpp
+index 82a9b0f..cd72e08 100644
+--- a/RSDKv5/RSDK/Graphics/SDL2/SDL2RenderDevice.cpp
++++ b/RSDKv5/RSDK/Graphics/SDL2/SDL2RenderDevice.cpp
+@@ -43,6 +43,33 @@ bool RenderDevice::Init()
+     videoSettings.windowWidth  = 1920;
+     videoSettings.windowHeight = 1080;
+     flags |= SDL_WINDOW_FULLSCREEN;
++#elif RETRO_PLATFORM == RETRO_iOS
++    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
++    SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2"); // dim the home bar, first swipe only reveals it
++    SDL_SetHint(SDL_HINT_AUDIO_CATEGORY, "playback");   // sound even with the silent switch on
++    SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0"); // otherwise the phone itself shows up as a "gamepad"
++
++    customSettings.maxPixWidth = 0; // use the whole (wide) screen, like the android port
++
++    videoSettings.windowed    = false;
++    videoSettings.exclusiveFS = false;
++    videoSettings.bordered    = true;
++
++    SDL_DisplayMode dm;
++    SDL_GetDesktopDisplayMode(0, &dm);
++    int32 longSide  = dm.w > dm.h ? dm.w : dm.h;
++    int32 shortSide = dm.w > dm.h ? dm.h : dm.w;
++    videoSettings.windowWidth  = longSide;
++    videoSettings.windowHeight = shortSide;
++    flags |= SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS;
++
++    // game width follows the screen's aspect ratio (e.g. 520x240 on a 19.5:9 iPhone), so pixels stay square
++    videoSettings.pixHeight = SCREEN_YSIZE;
++    videoSettings.pixWidth  = ((int32)((float)SCREEN_YSIZE * longSide / shortSide) + 3) & ~3;
++    if (videoSettings.pixWidth < DEFAULT_PIXWIDTH) // 4:3 iPads: keep the original 424px width (letterboxed) instead of a narrower game
++        videoSettings.pixWidth = DEFAULT_PIXWIDTH;
++    if (videoSettings.pixWidth > SCREEN_XMAX)
++        videoSettings.pixWidth = SCREEN_XMAX;
+ #endif
+ 
+     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
+@@ -298,6 +325,10 @@ void RenderDevice::FlipScreen()
+         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0xFF - (dimAmount * 0xFF));
+         SDL_RenderFillRect(renderer, NULL);
+     }
++#if RETRO_INPUTDEVICE_TOUCH
++    RSDK::SKU::DrawTouchOverlay(renderer);
++#endif
++
+     // no change here
+     SDL_RenderPresent(renderer);
+ }
+diff --git a/RSDKv5/RSDK/Input/Input.cpp b/RSDKv5/RSDK/Input/Input.cpp
+index c619d40..84d7987 100644
+--- a/RSDKv5/RSDK/Input/Input.cpp
++++ b/RSDKv5/RSDK/Input/Input.cpp
+@@ -52,6 +52,10 @@ int32 RSDK::gamePadCount               = 0;
+ #include "Paddleboat/PDBInputDevice.cpp"
+ #endif
+ 
++#if RETRO_INPUTDEVICE_TOUCH
++#include "Touch/TouchInputDevice.cpp"
++#endif
++
+ void RSDK::RemoveInputDevice(InputDevice *targetDevice)
+ {
+     if (targetDevice) {
+@@ -131,6 +135,10 @@ void RSDK::InitInputDevices()
+ #if RETRO_INPUTDEVICE_PDBOAT
+     SKU::InitPaddleboatInputAPI();
+ #endif
++
++#if RETRO_INPUTDEVICE_TOUCH
++    SKU::InitTouchInputAPI();
++#endif
+ }
+ 
+ void RSDK::ReleaseInputDevices()
+diff --git a/RSDKv5/RSDK/Input/Input.hpp b/RSDKv5/RSDK/Input/Input.hpp
+index a49620d..c4ed19c 100644
+--- a/RSDKv5/RSDK/Input/Input.hpp
++++ b/RSDKv5/RSDK/Input/Input.hpp
+@@ -504,6 +504,10 @@ extern int32 gamePadCount;
+ #include "Paddleboat/PDBInputDevice.hpp"
+ #endif
+ 
++#if RETRO_INPUTDEVICE_TOUCH
++#include "Touch/TouchInputDevice.hpp"
++#endif
++
+ // Initializes the input devices & the backend APIs powering em
+ void InitInputDevices();
+ // clears the input states, used by ProcessInput()
+diff --git a/RSDKv5/RSDK/Input/Touch/TouchInputDevice.cpp b/RSDKv5/RSDK/Input/Touch/TouchInputDevice.cpp
+new file mode 100644
+index 0000000..f36655f
+--- /dev/null
++++ b/RSDKv5/RSDK/Input/Touch/TouchInputDevice.cpp
+@@ -0,0 +1,916 @@
++// On-screen touch controls (iOS build).
++//
++// Layout (landscape):
++//   left half of the screen  -> floating d-pad (appears where the thumb lands, follows it)
++//   right half of the screen -> jump (the whole half is a jump zone, the drawn button is just a guide)
++//   contextual button        -> appears above the jump button only when it can be used:
++//                               super form (gold star) / encore character swap (cyan arrows)
++//   top-right                -> pause, replaced by "skip" while a cutscene can be skipped
++//   top-left                 -> back, only in menus
++// Mini-games get their own layouts (mean bean: two rotate buttons, pinball: two flipper halves).
++// Touches that don't hit a control are passed to the game untouched, so menus keep native touch support.
++// When a physical gamepad / keyboard is used the overlay fades out; touching the screen brings it back.
++
++#include "MobileTouchHints.h"
++#include <math.h>
++
++MobileTouchHints mobileTouchHints = {};
++
++namespace
++{
++
++enum TouchCtrlIDs {
++    TCTRL_NONE = -1,
++    TCTRL_DPAD,
++    TCTRL_JUMP,
++    TCTRL_ACTION,
++    TCTRL_PAUSE,
++    TCTRL_SKIP,
++    TCTRL_BACK,
++    TCTRL_FLIPL,
++    TCTRL_FLIPR,
++    TCTRL_COUNT,
++};
++
++enum TouchIcons {
++    TICON_NONE,
++    TICON_SUPER,
++    TICON_SWAP,
++    TICON_ROTATE_CW,
++    TICON_ROTATE_CCW,
++    TICON_JUMP,
++};
++
++struct TouchControl {
++    float x, y, r; // layout, output pixels
++    float hitR;
++    bool visible; // target visibility
++    float alpha;  // animated visibility
++    float press;  // animated press amount
++    bool held;
++    int32 icon;
++    float flash; // short highlight when it appears
++};
++
++struct TouchFinger {
++    SDL_FingerID id;
++    int32 ctrl;
++    float nx, ny; // normalized (0..1)
++    bool alive;
++};
++
++#define TOUCH_MAX_FINGERS (10)
++#define TOUCH_MAX_VERTS   (24000)
++
++TouchControl tCtrl[TCTRL_COUNT];
++TouchFinger tFinger[TOUCH_MAX_FINGERS];
++int32 tFingerCount = 0;
++
++float tScrW = 2532.0f, tScrH = 1170.0f; // output size, updated every draw
++
++RSDK::SKU::InputDeviceTouch *tDevice = nullptr;
++
++int32 tMode         = MTOUCH_MODE_NONE;
++bool tPlaying       = false;
++bool tPadMode       = false; // a physical controller is driving player 1
++float tPadFade      = 1.0f;  // 1 = overlay shown, 0 = hidden for gamepad
++float tActivity     = 1.0f;  // dims the overlay a bit while not touched
++int32 tIdleTimer    = 0;
++int32 tNotPlayTimer = 1000;
++uint32 tTime        = 0;
++
++float tDpadRestX = 0, tDpadRestY = 0;
++float tDpadX = 0, tDpadY = 0; // live center
++float tKnobX = 0, tKnobY = 0; // knob offset from center
++uint8 tDpadDir = 0;           // 1 up, 2 down, 4 left, 8 right
++bool tDpadAnchored = false;
++bool tActionReady  = true;  // swap button is dimmed while swapping isn't possible right now
++float tActionDim   = 1.0f;
++
++inline bool HintActive(unsigned int mark, unsigned int window)
++{
++    return (unsigned int)(mobileTouchHints.frame - mark) <= window;
++}
++
++inline float Approach(float v, float target, float speed)
++{
++    if (v < target)
++        return fminf(v + speed, target);
++    return fmaxf(v - speed, target);
++}
++
++inline float Clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
++
++inline float EaseOutBack(float t)
++{
++    const float c1 = 1.70158f, c3 = c1 + 1.0f;
++    float u = t - 1.0f;
++    return 1.0f + c3 * u * u * u + c1 * u * u;
++}
++
++void TouchLayout()
++{
++    float W = tScrW, H = tScrH;
++    float u      = H;
++    float sideIn = W * 0.055f; // notch / rounded corners
++    float botIn  = H * 0.06f;  // home indicator
++
++    TouchControl *c;
++
++    c       = &tCtrl[TCTRL_DPAD];
++    c->r    = 0.19f * u; // half length of an arm
++    c->x    = sideIn + 0.23f * u;
++    c->y    = H - botIn - 0.23f * u;
++    c->hitR = c->r * 1.6f;
++
++    tDpadRestX = c->x;
++    tDpadRestY = c->y;
++
++    c       = &tCtrl[TCTRL_JUMP];
++    c->r    = 0.13f * u;
++    c->x    = W - sideIn - 0.195f * u;
++    c->y    = H - botIn - 0.195f * u;
++    c->hitR = c->r * 1.3f;
++
++    TouchControl *jump = c;
++    c                  = &tCtrl[TCTRL_ACTION];
++    c->r               = 0.065f * u;
++    c->x               = jump->x + 0.12f * u;
++    c->y               = jump->y - 0.25f * u;
++    c->hitR            = c->r * 1.5f;
++
++    c       = &tCtrl[TCTRL_PAUSE];
++    c->r    = 0.06f * u;
++    c->x    = W - sideIn - 0.06f * u;
++    c->y    = 0.09f * u;
++    c->hitR = c->r * 1.8f;
++
++    c       = &tCtrl[TCTRL_SKIP];
++    c->r    = 0.065f * u;
++    c->x    = W - sideIn - 0.075f * u;
++    c->y    = 0.1f * u;
++    c->hitR = c->r * 1.6f;
++
++    c       = &tCtrl[TCTRL_BACK];
++    c->r    = 0.055f * u;
++    c->x    = sideIn + 0.065f * u;
++    c->y    = 0.09f * u;
++    c->hitR = c->r * 1.7f;
++
++    c       = &tCtrl[TCTRL_FLIPL];
++    c->r    = 0.14f * u;
++    c->x    = sideIn + 0.2f * u;
++    c->y    = H - botIn - 0.2f * u;
++    c->hitR = 0;
++
++    c       = &tCtrl[TCTRL_FLIPR];
++    c->r    = 0.14f * u;
++    c->x    = W - sideIn - 0.2f * u;
++    c->y    = H - botIn - 0.2f * u;
++    c->hitR = 0;
++}
++
++bool HitCircle(int32 id, float px, float py)
++{
++    TouchControl *c = &tCtrl[id];
++    if (!c->visible)
++        return false;
++    float dx = px - c->x, dy = py - c->y;
++    return dx * dx + dy * dy <= c->hitR * c->hitR;
++}
++
++int32 TouchHitTest(float px, float py)
++{
++    // small buttons first
++    if (HitCircle(TCTRL_SKIP, px, py))
++        return TCTRL_SKIP;
++    if (HitCircle(TCTRL_PAUSE, px, py))
++        return TCTRL_PAUSE;
++    if (HitCircle(TCTRL_ACTION, px, py))
++        return TCTRL_ACTION;
++
++    bool leftHalf = px < tScrW * 0.5f;
++    switch (tMode) {
++        case MTOUCH_MODE_PLATFORM:
++        case MTOUCH_MODE_SPECIAL:
++        case MTOUCH_MODE_PUYO:
++            if (leftHalf) {
++                // the d-pad answers in the lower-left area (generous, but it never moves)
++                if (HitCircle(TCTRL_DPAD, px, py) || (px < tScrW * 0.4f && py > tScrH * 0.3f))
++                    return TCTRL_DPAD;
++                return TCTRL_NONE;
++            }
++            return TCTRL_JUMP;
++
++        case MTOUCH_MODE_PINBALL: return leftHalf ? TCTRL_FLIPL : TCTRL_FLIPR;
++
++        default: break;
++    }
++    return TCTRL_NONE; // pass through to the game (menus)
++}
++
++void HapticForControl(int32 ctrl)
++{
++#if RETRO_PLATFORM == RETRO_iOS
++    switch (ctrl) {
++        case TCTRL_ACTION: iosHapticTap(2); break;
++        case TCTRL_PAUSE:
++        case TCTRL_SKIP: iosHapticTap(0); break;
++        default: break; // no buzzing on jump / d-pad
++    }
++#endif
++}
++
++void StartDpad(float px, float py)
++{
++    // the cross never moves
++    (void)px;
++    (void)py;
++    tDpadX        = tDpadRestX;
++    tDpadY        = tDpadRestY;
++    tDpadAnchored = true;
++}
++
++void UpdateDpad(float px, float py)
++{
++    float r  = tCtrl[TCTRL_DPAD].r;
++    float dx = px - tDpadX, dy = py - tDpadY;
++    float d  = sqrtf(dx * dx + dy * dy);
++
++    tDpadDir = 0;
++    if (d < r * 0.2f)
++        return;
++
++    // 8-way, diagonals get a 45 degree slice (y grows downwards)
++    float a = atan2f(dy, dx) * (180.0f / (float)M_PI);
++    if (a > -67.5f && a < 67.5f)
++        tDpadDir |= 8;
++    if (a > 112.5f || a < -112.5f)
++        tDpadDir |= 4;
++    if (a > 22.5f && a < 157.5f)
++        tDpadDir |= 2;
++    if (a < -22.5f && a > -157.5f)
++        tDpadDir |= 1;
++}
++
++void SetPadMode(bool padMode, RSDK::InputDevice *pad)
++{
++    using namespace RSDK;
++    if (tPadMode == padMode)
++        return;
++    tPadMode = padMode;
++
++    InputDevice *target = padMode ? pad : (InputDevice *)tDevice;
++    if (target && inputSlots[0] != (int32)target->id) {
++        InputDevice *prev = inputSlotDevices[0];
++        if (prev)
++            prev->isAssigned = false;
++        AssignInputSlotToDevice(CONT_P1, target->id);
++    }
++}
++
++// =====================
++// Drawing
++// =====================
++
++SDL_Vertex tVerts[TOUCH_MAX_VERTS];
++int32 tVertCount = 0;
++
++inline SDL_Color Col(uint32 rgb, float a)
++{
++    SDL_Color c;
++    c.r = (rgb >> 16) & 0xFF;
++    c.g = (rgb >> 8) & 0xFF;
++    c.b = rgb & 0xFF;
++    c.a = (uint8)(Clamp01(a) * 255.0f);
++    return c;
++}
++
++inline void Vert(float x, float y, SDL_Color c)
++{
++    if (tVertCount >= TOUCH_MAX_VERTS)
++        return;
++    SDL_Vertex *v  = &tVerts[tVertCount++];
++    v->position.x  = x;
++    v->position.y  = y;
++    v->color       = c;
++    v->tex_coord.x = 0;
++    v->tex_coord.y = 0;
++}
++
++inline void Tri(float x0, float y0, SDL_Color c0, float x1, float y1, SDL_Color c1, float x2, float y2, SDL_Color c2)
++{
++    if (tVertCount + 3 > TOUCH_MAX_VERTS)
++        return;
++    Vert(x0, y0, c0);
++    Vert(x1, y1, c1);
++    Vert(x2, y2, c2);
++}
++
++inline SDL_Color Clear(SDL_Color c)
++{
++    c.a = 0;
++    return c;
++}
++
++int32 Segments(float r)
++{
++    int32 s = (int32)(r * 0.5f);
++    return s < 24 ? 24 : (s > 96 ? 96 : s);
++}
++
++// filled disc with a soft 1.5px edge
++void Disc(float cx, float cy, float r, SDL_Color c)
++{
++    if (c.a == 0 || r <= 0)
++        return;
++    const float f = 1.5f;
++    int32 seg     = Segments(r);
++    float ri = fmaxf(r - f, 0), ro = r;
++    SDL_Color e = Clear(c);
++    for (int32 i = 0; i < seg; ++i) {
++        float a0 = (float)i / seg * 2 * (float)M_PI, a1 = (float)(i + 1) / seg * 2 * (float)M_PI;
++        float c0 = cosf(a0), s0 = sinf(a0), c1 = cosf(a1), s1 = sinf(a1);
++        Tri(cx, cy, c, cx + c0 * ri, cy + s0 * ri, c, cx + c1 * ri, cy + s1 * ri, c);
++        Tri(cx + c0 * ri, cy + s0 * ri, c, cx + c0 * ro, cy + s0 * ro, e, cx + c1 * ri, cy + s1 * ri, c);
++        Tri(cx + c1 * ri, cy + s1 * ri, c, cx + c0 * ro, cy + s0 * ro, e, cx + c1 * ro, cy + s1 * ro, e);
++    }
++}
++
++// stroked arc from a0 to a1 (radians), soft edges
++void Arc(float cx, float cy, float r, float thick, float a0, float a1, SDL_Color c)
++{
++    if (c.a == 0)
++        return;
++    const float f = 1.2f;
++    float span    = fabsf(a1 - a0);
++    int32 seg     = (int32)(Segments(r) * span / (2 * (float)M_PI)) + 2;
++    float r0 = r - thick * 0.5f - f, r1 = r - thick * 0.5f, r2 = r + thick * 0.5f, r3 = r + thick * 0.5f + f;
++    SDL_Color e = Clear(c);
++    for (int32 i = 0; i < seg; ++i) {
++        float t0 = a0 + (a1 - a0) * i / seg, t1 = a0 + (a1 - a0) * (i + 1) / seg;
++        float c0 = cosf(t0), s0 = sinf(t0), c1 = cosf(t1), s1 = sinf(t1);
++        float rs[4]      = { r0, r1, r2, r3 };
++        SDL_Color cs[4]  = { e, c, c, e };
++        for (int32 b = 0; b < 3; ++b) {
++            Tri(cx + c0 * rs[b], cy + s0 * rs[b], cs[b], cx + c0 * rs[b + 1], cy + s0 * rs[b + 1], cs[b + 1], cx + c1 * rs[b], cy + s1 * rs[b],
++                cs[b]);
++            Tri(cx + c1 * rs[b], cy + s1 * rs[b], cs[b], cx + c0 * rs[b + 1], cy + s0 * rs[b + 1], cs[b + 1], cx + c1 * rs[b + 1],
++                cy + s1 * rs[b + 1], cs[b + 1]);
++        }
++    }
++}
++
++inline void Ring(float cx, float cy, float r, float thick, SDL_Color c) { Arc(cx, cy, r, thick, 0, 2 * (float)M_PI, c); }
++
++// thick line with round caps
++void Line(float x0, float y0, float x1, float y1, float thick, SDL_Color c)
++{
++    float dx = x1 - x0, dy = y1 - y0;
++    float l = sqrtf(dx * dx + dy * dy);
++    if (l < 0.001f)
++        return;
++    float nx = -dy / l * thick * 0.5f, ny = dx / l * thick * 0.5f;
++    Tri(x0 + nx, y0 + ny, c, x1 + nx, y1 + ny, c, x0 - nx, y0 - ny, c);
++    Tri(x0 - nx, y0 - ny, c, x1 + nx, y1 + ny, c, x1 - nx, y1 - ny, c);
++    Disc(x0, y0, thick * 0.5f, c);
++    Disc(x1, y1, thick * 0.5f, c);
++}
++
++// convex / star-shaped polygon, fanned from its centre
++void Fan(float cx, float cy, const float *pts, int32 count, SDL_Color c)
++{
++    for (int32 i = 0; i < count; ++i) {
++        int32 j = (i + 1) % count;
++        Tri(cx, cy, c, pts[i * 2], pts[i * 2 + 1], c, pts[j * 2], pts[j * 2 + 1], c);
++    }
++}
++
++void Triangle(float cx, float cy, float size, float angle, SDL_Color c)
++{
++    float pts[6];
++    for (int32 i = 0; i < 3; ++i) {
++        float a        = angle + i * 2.0f * (float)M_PI / 3.0f;
++        pts[i * 2]     = cx + cosf(a) * size;
++        pts[i * 2 + 1] = cy + sinf(a) * size;
++    }
++    Fan(cx, cy, pts, 3, c);
++}
++
++void Star(float cx, float cy, float ro, float ri, SDL_Color c)
++{
++    float pts[20];
++    for (int32 i = 0; i < 10; ++i) {
++        float a        = -(float)M_PI / 2 + i * (float)M_PI / 5;
++        float r        = (i & 1) ? ri : ro;
++        pts[i * 2]     = cx + cosf(a) * r;
++        pts[i * 2 + 1] = cy + sinf(a) * r;
++    }
++    Fan(cx, cy, pts, 10, c);
++}
++
++// circular arrow: arc + arrow head at the end
++void ArcArrow(float cx, float cy, float r, float thick, float a0, float a1, SDL_Color c)
++{
++    Arc(cx, cy, r, thick, a0, a1, c);
++    float dir = a1 > a0 ? 1.0f : -1.0f;
++    float hx = cx + cosf(a1) * r, hy = cy + sinf(a1) * r;
++    // tangent direction at the end of the arc
++    float tx = -sinf(a1) * dir, ty = cosf(a1) * dir;
++    float hs = thick * 1.6f;
++    float pts[6] = {
++        hx + tx * hs * 1.1f, hy + ty * hs * 1.1f, hx - ty * hs * 0.9f - tx * hs * 0.2f, hy + tx * hs * 0.9f - ty * hs * 0.2f,
++        hx + ty * hs * 0.9f - tx * hs * 0.2f, hy - tx * hs * 0.9f - ty * hs * 0.2f,
++    };
++    Fan((pts[0] + pts[2] + pts[4]) / 3, (pts[1] + pts[3] + pts[5]) / 3, pts, 3, c);
++}
++
++const uint32 COL_FILL  = 0x101010;
++const uint32 COL_EDGE  = 0x2A2A2A;
++const uint32 COL_SOFT  = 0xBDBDBD;
++const uint32 COL_WHITE = 0xFFFFFF;
++const uint32 COL_GOLD  = 0xFFC93C;
++const uint32 COL_CYAN  = 0x4FD8FF;
++
++void DrawButtonBase(TouchControl *c, float a, float scale, uint32 accent, bool accented)
++{
++    // dark translucent disc with a thick dark rim and a faint inner ring
++    float r = c->r * scale;
++    Disc(c->x, c->y, r, Col(COL_FILL, (0.32f + 0.18f * c->press) * a));
++    if (c->press > 0)
++        Disc(c->x, c->y, r, Col(accented ? accent : 0x6A6A6A, 0.3f * c->press * a));
++    Ring(c->x, c->y, r - r * 0.05f, fmaxf(r * 0.1f, 3.0f), Col(accented ? accent : COL_EDGE, (accented ? 0.9f : 0.85f) * a));
++    Ring(c->x, c->y, r * 0.78f, fmaxf(r * 0.025f, 1.5f), Col(COL_SOFT, 0.12f * a));
++}
++
++void DrawIcon(int32 icon, float cx, float cy, float r, SDL_Color c, SDL_Color accent)
++{
++    switch (icon) {
++        case TICON_JUMP: {
++            float t = r * 0.13f;
++            Line(cx - r * 0.34f, cy + r * 0.14f, cx, cy - r * 0.2f, t, c);
++            Line(cx, cy - r * 0.2f, cx + r * 0.34f, cy + r * 0.14f, t, c);
++            break;
++        }
++
++        case TICON_SUPER: Star(cx, cy + r * 0.03f, r * 0.52f, r * 0.22f, accent); break;
++
++        case TICON_SWAP: {
++            float t = r * 0.11f;
++            ArcArrow(cx, cy, r * 0.42f, t, (float)M_PI * 1.08f, (float)M_PI * 1.85f, accent);
++            ArcArrow(cx, cy, r * 0.42f, t, (float)M_PI * 0.08f, (float)M_PI * 0.85f, accent);
++            break;
++        }
++
++        case TICON_ROTATE_CW: ArcArrow(cx, cy, r * 0.4f, r * 0.11f, (float)M_PI * 0.75f, (float)M_PI * 2.35f, c); break;
++        case TICON_ROTATE_CCW: ArcArrow(cx, cy, r * 0.4f, r * 0.11f, (float)M_PI * 0.25f, -(float)M_PI * 1.35f, c); break;
++
++        default: break;
++    }
++}
++
++void Rect(float x0, float y0, float x1, float y1, SDL_Color c)
++{
++    Tri(x0, y0, c, x1, y0, c, x0, y1, c);
++    Tri(x0, y1, c, x1, y0, c, x1, y1, c);
++}
++
++void DrawDpad(float a)
++{
++    TouchControl *c = &tCtrl[TCTRL_DPAD];
++    float R         = c->r;      // centre -> end of an arm
++    float w         = R * 0.34f; // half width of an arm
++    float x = tDpadX, y = tDpadY;
++
++    // body (3 rects so the translucent fill never overlaps itself)
++    SDL_Color fill = Col(COL_FILL, 0.34f * a);
++    Rect(x - R, y - w, x + R, y + w, fill);
++    Rect(x - w, y - R, x + w, y - w, fill);
++    Rect(x - w, y + w, x + w, y + R, fill);
++
++    // pressed arms
++    SDL_Color lit = Col(0x6A6A6A, 0.45f * a);
++    if (tDpadDir & 1)
++        Rect(x - w, y - R, x + w, y - w, lit);
++    if (tDpadDir & 2)
++        Rect(x - w, y + w, x + w, y + R, lit);
++    if (tDpadDir & 4)
++        Rect(x - R, y - w, x - w, y + w, lit);
++    if (tDpadDir & 8)
++        Rect(x + w, y - w, x + R, y + w, lit);
++
++    // thick dark rim, same as the round buttons
++    float pts[12][2] = {
++        { x - w, y - R }, { x + w, y - R }, { x + w, y - w }, { x + R, y - w }, { x + R, y + w }, { x + w, y + w },
++        { x + w, y + R }, { x - w, y + R }, { x - w, y + w }, { x - R, y + w }, { x - R, y - w }, { x - w, y - w },
++    };
++    float t        = fmaxf(R * 0.075f, 3.0f);
++    SDL_Color edge = Col(COL_EDGE, 0.85f * a);
++    for (int32 i = 0; i < 12; ++i) {
++        int32 n = (i + 1) % 12;
++        Line(pts[i][0], pts[i][1], pts[n][0], pts[n][1], t, edge);
++    }
++
++    // small arrows
++    const uint8 bits[4] = { 1, 8, 2, 4 };
++    const float angs[4] = { -(float)M_PI / 2, 0, (float)M_PI / 2, (float)M_PI };
++    for (int32 i = 0; i < 4; ++i) {
++        bool on  = (tDpadDir & bits[i]) != 0;
++        float ax = x + cosf(angs[i]) * R * 0.66f;
++        float ay = y + sinf(angs[i]) * R * 0.66f;
++        Triangle(ax, ay, w * 0.36f, angs[i], Col(COL_SOFT, (on ? 0.8f : 0.3f) * a));
++    }
++
++    Disc(x, y, w * 0.42f, Col(COL_EDGE, 0.5f * a));
++}
++
++} // namespace
++
++// =====================
++// Device
++// =====================
++
++void RSDK::SKU::InputDeviceTouch::UpdateInput()
++{
++    ++mobileTouchHints.frame;
++    ++tTime;
++
++    TouchLayout();
++
++    // ---- what is going on in the game ----
++    bool menuOpen = HintActive(mobileTouchHints.menuFrame, 2);
++    tPlaying      = !menuOpen && HintActive(mobileTouchHints.playFrame, 20);
++    tMode         = tPlaying ? mobileTouchHints.mode : MTOUCH_MODE_NONE;
++    bool canSuper = tPlaying && tMode == MTOUCH_MODE_PLATFORM && HintActive(mobileTouchHints.superFrame, 20);
++    bool swapReady = tPlaying && tMode == MTOUCH_MODE_PLATFORM && HintActive(mobileTouchHints.swapFrame, 2);
++    bool canSwap   = tPlaying && tMode == MTOUCH_MODE_PLATFORM && HintActive(mobileTouchHints.swapAvailFrame, 20);
++    bool canSkip  = !menuOpen && HintActive(mobileTouchHints.skipFrame, 3);
++
++    tNotPlayTimer = tPlaying ? 0 : tNotPlayTimer + 1;
++
++    bool stickMode = tMode == MTOUCH_MODE_PLATFORM || tMode == MTOUCH_MODE_SPECIAL || tMode == MTOUCH_MODE_PUYO;
++
++    tCtrl[TCTRL_DPAD].visible  = stickMode;
++    tCtrl[TCTRL_JUMP].visible  = stickMode;
++    tCtrl[TCTRL_FLIPL].visible = tMode == MTOUCH_MODE_PINBALL;
++    tCtrl[TCTRL_FLIPR].visible = tMode == MTOUCH_MODE_PINBALL;
++    tCtrl[TCTRL_SKIP].visible  = canSkip;
++    tCtrl[TCTRL_PAUSE].visible = tPlaying && !canSkip;
++    tCtrl[TCTRL_BACK].visible  = false; // menus are fully touch-driven by the game itself
++
++    tCtrl[TCTRL_JUMP].icon = tMode == MTOUCH_MODE_PUYO ? TICON_ROTATE_CW : TICON_JUMP;
++
++    TouchControl *act = &tCtrl[TCTRL_ACTION];
++    act->visible      = (tMode == MTOUCH_MODE_PUYO) || canSuper || canSwap;
++    tActionReady      = tMode == MTOUCH_MODE_PUYO || canSuper || swapReady;
++    if (act->visible) {
++        int32 icon = tMode == MTOUCH_MODE_PUYO ? TICON_ROTATE_CCW : (canSuper ? TICON_SUPER : TICON_SWAP);
++        if (icon != act->icon || act->alpha < 0.05f)
++            act->flash = 1.0f;
++        act->icon = icon; // keep the last icon while fading out
++    }
++
++    // ---- gamepad / keyboard takes over? (only while no finger is on the screen, so stick drift can't hide the overlay mid-play) ----
++    for (int32 i = 0; i < inputDeviceCount && tFingerCount == 0 && tIdleTimer > 30; ++i) {
++        InputDevice *dev = inputDeviceList[i];
++        if (!dev || dev == this || !dev->active || dev->disabled)
++            continue;
++#if RETRO_INPUTDEVICE_SDL2
++        if ((dev->gamepadType >> 16) == DEVICE_API_SDL2) {
++            InputDeviceSDL *pad = (InputDeviceSDL *)dev;
++            if (pad->buttonMasks & ~pad->prevButtonMasks) { // a real button was pressed (sticks/drift don't count)
++                SetPadMode(true, dev);
++                break;
++            }
++        }
++#endif
++    }
++
++    // ---- fingers ----
++    for (int32 f = 0; f < tFingerCount; ++f) tFinger[f].alive = false;
++
++    bool newPress = false;
++    int32 devices = SDL_GetNumTouchDevices();
++    for (int32 d = 0; d < devices; ++d) {
++        SDL_TouchID touchID = SDL_GetTouchDevice(d);
++        int32 fingers       = SDL_GetNumTouchFingers(touchID);
++        for (int32 i = 0; i < fingers; ++i) {
++            SDL_Finger *finger = SDL_GetTouchFinger(touchID, i);
++            if (!finger)
++                continue;
++
++            TouchFinger *tf = nullptr;
++            for (int32 f = 0; f < tFingerCount; ++f) {
++                if (tFinger[f].id == finger->id) {
++                    tf = &tFinger[f];
++                    break;
++                }
++            }
++
++            if (!tf) {
++                if (tFingerCount >= TOUCH_MAX_FINGERS)
++                    continue;
++
++                if (tPadMode)
++                    SetPadMode(false, nullptr);
++
++                tf     = &tFinger[tFingerCount++];
++                tf->id = finger->id;
++                float px = finger->x * tScrW, py = finger->y * tScrH;
++                tf->ctrl = TouchHitTest(px, py);
++                newPress = true;
++
++                if (tf->ctrl == TCTRL_DPAD)
++                    StartDpad(px, py);
++                HapticForControl(tf->ctrl);
++            }
++
++            tf->nx    = finger->x;
++            tf->ny    = finger->y;
++            tf->alive = true;
++        }
++    }
++
++    // drop lifted fingers
++    for (int32 f = 0; f < tFingerCount;) {
++        if (!tFinger[f].alive) {
++            tFinger[f] = tFinger[--tFingerCount];
++        }
++        else {
++            ++f;
++        }
++    }
++
++    // ---- controls -> buttons ----
++    for (int32 i = 0; i < TCTRL_COUNT; ++i) tCtrl[i].held = false;
++
++    TouchFinger *dpadFinger = nullptr;
++    touchInfo.count         = 0;
++    for (int32 f = 0; f < tFingerCount; ++f) {
++        TouchFinger *tf = &tFinger[f];
++        if (tf->ctrl == TCTRL_NONE) {
++            if (touchInfo.count < 0x10) {
++                touchInfo.x[touchInfo.count]    = tf->nx;
++                touchInfo.y[touchInfo.count]    = tf->ny;
++                touchInfo.down[touchInfo.count] = true;
++                touchInfo.count++;
++            }
++        }
++        else {
++            tCtrl[tf->ctrl].held = true;
++            if (tf->ctrl == TCTRL_DPAD && !dpadFinger)
++                dpadFinger = tf;
++        }
++    }
++    for (int32 i = touchInfo.count; i < 0x10; ++i) touchInfo.down[i] = false;
++
++    if (dpadFinger) {
++        UpdateDpad(dpadFinger->nx * tScrW, dpadFinger->ny * tScrH);
++    }
++    else {
++        tDpadDir      = 0;
++        tDpadAnchored = false;
++        tDpadX        = tDpadRestX;
++        tDpadY        = tDpadRestY;
++    }
++
++    bool jump   = tCtrl[TCTRL_JUMP].held;
++    bool action = tCtrl[TCTRL_ACTION].held;
++
++    stateUp    = (tDpadDir & 1) != 0;
++    stateDown  = (tDpadDir & 2) != 0;
++    stateLeft  = (tDpadDir & 4) != 0;
++    stateRight = (tDpadDir & 8) != 0;
++    stateA     = jump;
++    stateB     = tCtrl[TCTRL_BACK].held || tCtrl[TCTRL_FLIPR].held || (action && tMode == MTOUCH_MODE_PUYO);
++    stateX     = tCtrl[TCTRL_FLIPL].held;
++    stateY     = action && tMode != MTOUCH_MODE_PUYO;
++    stateStart = tCtrl[TCTRL_PAUSE].held || tCtrl[TCTRL_SKIP].held;
++
++    if (tPadMode) {
++        stateUp = stateDown = stateLeft = stateRight = stateA = stateB = stateX = stateY = stateStart = false;
++    }
++
++    // ---- device bookkeeping ----
++    if (newPress) {
++        inactiveTimer[0] = 0;
++        anyPress         = true;
++        if (stateA || stateStart)
++            inactiveTimer[1] = 0;
++        else
++            ++inactiveTimer[1];
++
++        if (!tPadMode && inputSlots[0] != (int32)id) {
++            if (inputSlotDevices[0] && inputSlotDevices[0] != this)
++                inputSlotDevices[0]->isAssigned = false;
++            AssignInputSlotToDevice(CONT_P1, id);
++        }
++    }
++    else {
++        ++inactiveTimer[0];
++        ++inactiveTimer[1];
++        anyPress = false;
++    }
++
++    // the touch screen is player 1 only: never let it drive the sidekick
++    for (int32 p = 1; p < PLAYER_COUNT; ++p) {
++        if (inputSlots[p] == (int32)id) {
++            inputSlots[p]       = INPUT_AUTOASSIGN;
++            inputSlotDevices[p] = nullptr;
++        }
++    }
++    if (!tPadMode && inputSlots[0] == (int32)id)
++        isAssigned = true;
++
++    // ---- animation ----
++    tIdleTimer = tFingerCount ? 0 : tIdleTimer + 1;
++    tActivity  = Approach(tActivity, tIdleTimer > 240 ? 0.65f : 1.0f, tIdleTimer > 240 ? 0.01f : 0.12f);
++    tPadFade   = Approach(tPadFade, tPadMode ? 0.0f : 1.0f, 0.08f);
++
++    for (int32 i = 0; i < TCTRL_COUNT; ++i) {
++        TouchControl *c = &tCtrl[i];
++        float fadeIn    = i == TCTRL_ACTION ? 0.25f : 0.09f;
++        c->alpha        = Approach(c->alpha, c->visible ? 1.0f : 0.0f, c->visible ? fadeIn : 0.15f);
++        c->press        = Approach(c->press, c->held ? 1.0f : 0.0f, 0.35f);
++        c->flash        = Approach(c->flash, 0.0f, 0.025f);
++    }
++
++    tActionDim = Approach(tActionDim, tActionReady ? 1.0f : 0.45f, 0.15f);
++
++    ProcessInput(CONT_ANY);
++}
++
++void RSDK::SKU::InputDeviceTouch::ProcessInput(int32 controllerID)
++{
++    controller[controllerID].keyUp.press |= stateUp;
++    controller[controllerID].keyDown.press |= stateDown;
++    controller[controllerID].keyLeft.press |= stateLeft;
++    controller[controllerID].keyRight.press |= stateRight;
++    controller[controllerID].keyA.press |= stateA;
++    controller[controllerID].keyB.press |= stateB;
++    controller[controllerID].keyX.press |= stateX;
++    controller[controllerID].keyY.press |= stateY;
++    controller[controllerID].keyStart.press |= stateStart;
++}
++
++void RSDK::SKU::InputDeviceTouch::CloseDevice()
++{
++    active     = false;
++    isAssigned = false;
++}
++
++void RSDK::SKU::InitTouchInputAPI()
++{
++    memset(&mobileTouchHints, 0, sizeof(mobileTouchHints));
++    mobileTouchHints.frame = 1000; // so that zeroed marks count as "long ago"
++
++    memset(tCtrl, 0, sizeof(tCtrl));
++    tFingerCount = 0;
++
++#if RETRO_PLATFORM == RETRO_iOS
++    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
++#endif
++
++    if (inputDeviceCount >= INPUTDEVICE_COUNT)
++        return;
++
++    if (inputDeviceList[inputDeviceCount])
++        delete inputDeviceList[inputDeviceCount];
++
++    tDevice                           = new InputDeviceTouch();
++    inputDeviceList[inputDeviceCount] = tDevice;
++
++    tDevice->gamepadType = (DEVICE_API_NONE << 16) | (DEVICE_TYPE_CONTROLLER << 8) | (DEVICE_XBOX << 0);
++    tDevice->id          = 0x70C4AD01;
++    tDevice->active      = true;
++    tDevice->disabled    = false;
++    tDevice->isAssigned  = false;
++    tDevice->anyPress    = false;
++    tDevice->inactiveTimer[0] = 0;
++    tDevice->inactiveTimer[1] = 0;
++
++    tDevice->stateUp = tDevice->stateDown = tDevice->stateLeft = tDevice->stateRight = 0;
++    tDevice->stateA = tDevice->stateB = tDevice->stateX = tDevice->stateY = tDevice->stateStart = 0;
++
++    inputDeviceCount++;
++
++    TouchLayout();
++    tDpadX = tDpadRestX;
++    tDpadY = tDpadRestY;
++}
++
++#if RETRO_RENDERDEVICE_SDL2
++void RSDK::SKU::DrawTouchOverlay(SDL_Renderer *renderer)
++{
++    if (!tDevice)
++        return;
++
++    int32 ow = 0, oh = 0;
++    SDL_GetRendererOutputSize(renderer, &ow, &oh);
++    if (ow <= 0 || oh <= 0)
++        return;
++    tScrW = (float)ow;
++    tScrH = (float)oh;
++
++    float global = tPadFade;
++    if (global < 0.01f)
++        return;
++
++    tVertCount = 0;
++
++    // ---- d-pad ----
++    TouchControl *dp = &tCtrl[TCTRL_DPAD];
++    if (dp->alpha > 0.01f)
++        DrawDpad(dp->alpha * tActivity * global);
++
++    // ---- jump ----
++    TouchControl *jp = &tCtrl[TCTRL_JUMP];
++    if (jp->alpha > 0.01f) {
++        float a     = jp->alpha * tActivity * global;
++        float scale = 1.0f - 0.07f * jp->press;
++        DrawButtonBase(jp, a, scale, COL_WHITE, false);
++        if (jp->icon != TICON_JUMP)
++            DrawIcon(jp->icon, jp->x, jp->y, jp->r * scale, Col(COL_SOFT, 0.6f * a), Col(COL_SOFT, 0.6f * a));
++    }
++
++    // ---- contextual action ----
++    TouchControl *ac = &tCtrl[TCTRL_ACTION];
++    if (ac->alpha > 0.01f) {
++        float a       = ac->alpha * global * tActionDim;
++        float scale   = 1.0f - 0.08f * ac->press;
++        bool special  = ac->icon == TICON_SUPER || ac->icon == TICON_SWAP;
++        uint32 accent = ac->icon == TICON_SUPER ? COL_GOLD : (ac->icon == TICON_SWAP ? COL_CYAN : COL_WHITE);
++
++        DrawButtonBase(ac, a, scale, accent, special);
++        DrawIcon(ac->icon, ac->x, ac->y, ac->r * scale, Col(COL_WHITE, 0.92f * a), Col(special ? accent : COL_WHITE, 0.95f * a));
++    }
++
++    // ---- pinball flippers ----
++    for (int32 i = TCTRL_FLIPL; i <= TCTRL_FLIPR; ++i) {
++        TouchControl *fc = &tCtrl[i];
++        if (fc->alpha <= 0.01f)
++            continue;
++        float a     = fc->alpha * tActivity * global;
++        float scale = 1.0f - 0.07f * fc->press;
++        DrawButtonBase(fc, a, scale, COL_WHITE, false);
++
++        float dir = i == TCTRL_FLIPL ? 1.0f : -1.0f;
++        float r   = fc->r * scale;
++        float lift = fc->press * 0.35f;
++        float px = fc->x - dir * r * 0.38f, py = fc->y + r * 0.05f;
++        float ex = fc->x + dir * r * 0.4f, ey = fc->y + r * (0.18f - lift);
++        Line(px, py, ex, ey, r * 0.16f, Col(COL_WHITE, 0.9f * a));
++        Disc(px, py, r * 0.13f, Col(COL_WHITE, 0.9f * a));
++    }
++
++    // ---- pause ----
++    TouchControl *pc = &tCtrl[TCTRL_PAUSE];
++    if (pc->alpha > 0.01f) {
++        float a     = pc->alpha * global;
++        float scale = 1.0f - 0.08f * pc->press;
++        float r     = pc->r * scale;
++        Disc(pc->x, pc->y, r, Col(0x000000, (0.82f + 0.1f * pc->press) * a));
++        Rect(pc->x - r * 0.34f, pc->y - r * 0.38f, pc->x - r * 0.1f, pc->y + r * 0.38f, Col(COL_WHITE, 0.95f * a));
++        Rect(pc->x + r * 0.1f, pc->y - r * 0.38f, pc->x + r * 0.34f, pc->y + r * 0.38f, Col(COL_WHITE, 0.95f * a));
++    }
++
++    // ---- skip ----
++    TouchControl *sk = &tCtrl[TCTRL_SKIP];
++    if (sk->alpha > 0.01f) {
++        float a     = sk->alpha * global;
++        float scale = EaseOutBack(sk->alpha) * (1.0f - 0.08f * sk->press);
++        float r     = sk->r * scale;
++        Disc(sk->x, sk->y, r, Col(0x000000, (0.82f + 0.1f * sk->press) * a));
++        SDL_Color ic = Col(COL_WHITE, 0.95f * a);
++        Triangle(sk->x - r * 0.2f, sk->y, r * 0.24f, 0, ic);
++        Triangle(sk->x + r * 0.1f, sk->y, r * 0.24f, 0, ic);
++        Rect(sk->x + r * 0.32f, sk->y - r * 0.22f, sk->x + r * 0.42f, sk->y + r * 0.22f, ic);
++    }
++
++    // ---- back ----
++    TouchControl *bk = &tCtrl[TCTRL_BACK];
++    if (bk->alpha > 0.01f) {
++        float a     = bk->alpha * global * 0.85f;
++        float scale = 1.0f - 0.08f * bk->press;
++        DrawButtonBase(bk, a, scale, COL_WHITE, false);
++        float r      = bk->r * scale;
++        SDL_Color ic = Col(COL_WHITE, 0.92f * a);
++        Line(bk->x + r * 0.1f, bk->y - r * 0.3f, bk->x - r * 0.2f, bk->y, r * 0.15f, ic);
++        Line(bk->x - r * 0.2f, bk->y, bk->x + r * 0.1f, bk->y + r * 0.3f, r * 0.15f, ic);
++    }
++
++    if (!tVertCount)
++        return;
++
++    // draw in real output pixels on top of the (letterboxed) game frame
++    int32 lw = 0, lh = 0;
++    SDL_RenderGetLogicalSize(renderer, &lw, &lh);
++    SDL_RenderSetLogicalSize(renderer, 0, 0);
++    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
++
++    SDL_RenderGeometry(renderer, NULL, tVerts, tVertCount, NULL, 0);
++
++    if (lw && lh)
++        SDL_RenderSetLogicalSize(renderer, lw, lh);
++}
++#endif
+diff --git a/RSDKv5/RSDK/Input/Touch/TouchInputDevice.hpp b/RSDKv5/RSDK/Input/Touch/TouchInputDevice.hpp
+new file mode 100644
+index 0000000..f7e2fcd
+--- /dev/null
++++ b/RSDKv5/RSDK/Input/Touch/TouchInputDevice.hpp
+@@ -0,0 +1,31 @@
++// On-screen touch controls for touch-only devices (iOS build).
++// The device reads raw fingers from SDL, turns touches on the controls into controller buttons,
++// forwards all other touches to the game (menus use TouchInfo), and draws the overlay on top of the frame.
++
++namespace SKU
++{
++
++struct InputDeviceTouch : InputDevice {
++    void UpdateInput();
++    void ProcessInput(int32 controllerID);
++    void CloseDevice();
++
++    uint8 stateUp;
++    uint8 stateDown;
++    uint8 stateLeft;
++    uint8 stateRight;
++    uint8 stateA;
++    uint8 stateB;
++    uint8 stateX;
++    uint8 stateY;
++    uint8 stateStart;
++};
++
++void InitTouchInputAPI();
++
++#if RETRO_RENDERDEVICE_SDL2
++// called right before the frame is presented
++void DrawTouchOverlay(SDL_Renderer *renderer);
++#endif
++
++} // namespace SKU
+diff --git a/RSDKv5/RSDK/User/Core/UserStorage.cpp b/RSDKv5/RSDK/User/Core/UserStorage.cpp
+index 0cf8d74..bd3534c 100644
+--- a/RSDKv5/RSDK/User/Core/UserStorage.cpp
++++ b/RSDKv5/RSDK/User/Core/UserStorage.cpp
+@@ -1155,6 +1155,12 @@ void RSDK::SKU::InitUserDirectory()
+     sprintf_s(buffer, sizeof(buffer), "%s/RSDKv5/", getResourcesPath());
+     SKU::SetUserFileCallbacks(buffer, NULL, NULL);
+ 
++#elif RETRO_PLATFORM == RETRO_iOS
++
++    char buffer[0x100];
++    sprintf_s(buffer, sizeof(buffer), "%s/", getResourcesPath());
++    SKU::SetUserFileCallbacks(buffer, NULL, NULL);
++
+ #elif RETRO_PLATFORM == RETRO_ANDROID
+ 
+     // done by javaside
+diff --git a/dependencies/mac/cocoaHelpers.hpp b/dependencies/mac/cocoaHelpers.hpp
+index b83ca73..a2b9f50 100644
+--- a/dependencies/mac/cocoaHelpers.hpp
++++ b/dependencies/mac/cocoaHelpers.hpp
+@@ -1,6 +1,17 @@
+ #ifndef COCOA_HELPERS_H
+ #define COCOA_HELPERS_H
+ 
++// macOS: Application Support, iOS: the app's Documents folder (visible in the Files app)
+ const char* getResourcesPath(void);
+ 
+-#endif
+\ No newline at end of file
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#if TARGET_OS_IPHONE
++// read-only folder inside the .app bundle (Data.rsdk can be shipped there)
++const char* getBundleResourcesPath(void);
++// light haptic feedback: 0 = selection, 1 = light, 2 = medium
++void iosHapticTap(int strength);
++#endif
++#endif
++
++#endif
+diff --git a/dependencies/mac/cocoaHelpers.mm b/dependencies/mac/cocoaHelpers.mm
+index c731ab7..1e494e9 100644
+--- a/dependencies/mac/cocoaHelpers.mm
++++ b/dependencies/mac/cocoaHelpers.mm
+@@ -1,16 +1,57 @@
+ #ifdef __APPLE__
+ 
+ #import <Foundation/Foundation.h>
++#include <TargetConditionals.h>
++#if TARGET_OS_IPHONE
++#import <UIKit/UIKit.h>
++#endif
+ #include "cocoaHelpers.hpp"
+ 
++static char resourcesPath[0x200];
++
+ const char* getResourcesPath(void)
+ {
+     @autoreleasepool
+     {
++#if TARGET_OS_IPHONE
++        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
++#else
+         NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
+-        NSString *applicationSupportDirectory = [paths firstObject];
+-        
+-        return (char*)[applicationSupportDirectory UTF8String];
++#endif
++        NSString *dir = [paths firstObject];
++        strlcpy(resourcesPath, [dir UTF8String], sizeof(resourcesPath));
++        return resourcesPath;
++    }
++}
++
++#if TARGET_OS_IPHONE
++static char bundlePath[0x200];
++
++const char* getBundleResourcesPath(void)
++{
++    @autoreleasepool
++    {
++        strlcpy(bundlePath, [[[NSBundle mainBundle] resourcePath] UTF8String], sizeof(bundlePath));
++        return bundlePath;
+     }
+ }
+-#endif
+\ No newline at end of file
++
++void iosHapticTap(int strength)
++{
++    static UISelectionFeedbackGenerator *selection = nil;
++    static UIImpactFeedbackGenerator *light        = nil;
++    static UIImpactFeedbackGenerator *medium       = nil;
++    if (!selection) {
++        selection = [[UISelectionFeedbackGenerator alloc] init];
++        light     = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
++        medium    = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
++    }
++    switch (strength) {
++        case 0: [selection selectionChanged]; break;
++        case 1: [light impactOccurred]; break;
++        default: [medium impactOccurred]; break;
++    }
++}
++#endif
++
++#endif
+diff --git a/platforms/iOS.cmake b/platforms/iOS.cmake
+new file mode 100644
+index 0000000..c98ef8f
+--- /dev/null
++++ b/platforms/iOS.cmake
+@@ -0,0 +1,87 @@
++# iOS (iPhone / iPad) build.
++# Configure with: -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DGAME_STATIC=ON -DSDL2_SOURCE_DIR=<SDL2 source checkout>
++# libogg / libtheora sources are expected in dependencies/android/{libogg,libtheora} (same as the Android build).
++
++enable_language(OBJC OBJCXX)
++
++set(RETRO_SUBSYSTEM "SDL2" CACHE STRING "The subsystem to use" FORCE)
++set(DEP_PATH android) # libogg/libtheora sources
++
++add_executable(RetroEngine MACOSX_BUNDLE
++    ${RETRO_FILES}
++    dependencies/mac/cocoaHelpers.mm
++    platforms/iOS/Icon-60@2x.png
++    platforms/iOS/Icon-60@3x.png
++    platforms/iOS/Icon-76@2x.png
++    platforms/iOS/Icon-83.5@2x.png
++)
++
++set(COMPILE_OGG TRUE)
++set(COMPILE_THEORA TRUE)
++set(OGG_FLAGS -O2 -w)
++set(THEORA_FLAGS -O2 -w)
++
++# ---- SDL2 (static, built from source) ----
++if(NOT SDL2_SOURCE_DIR)
++    message(FATAL_ERROR "SDL2_SOURCE_DIR must point to an SDL2 source checkout")
++endif()
++
++set(SDL_SHARED OFF CACHE BOOL "" FORCE)
++set(SDL_STATIC ON CACHE BOOL "" FORCE)
++set(SDL_TEST OFF CACHE BOOL "" FORCE)
++set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
++add_subdirectory(${SDL2_SOURCE_DIR} ${CMAKE_BINARY_DIR}/SDL2 EXCLUDE_FROM_ALL)
++
++target_link_libraries(RetroEngine SDL2::SDL2main SDL2::SDL2-static)
++
++target_link_libraries(RetroEngine
++    "-framework Foundation"
++    "-framework UIKit"
++    "-framework AVFoundation"
++    "-framework AudioToolbox"
++    "-framework CoreAudio"
++    "-framework CoreGraphics"
++    "-framework CoreHaptics"
++    "-framework CoreMotion"
++    "-framework CoreBluetooth"
++    "-framework GameController"
++    "-framework Metal"
++    "-framework QuartzCore"
++    "-framework OpenGLES"
++    "-framework ImageIO"
++    "-framework MobileCoreServices"
++    iconv
++)
++
++target_include_directories(RetroEngine PRIVATE dependencies/mac/)
++
++# on-screen touch controls talk to the (statically linked) game logic
++target_compile_definitions(RetroEngine PRIVATE MANIA_MOBILE_TOUCH=1)
++if(TARGET ${GAME_NAME})
++    target_compile_definitions(${GAME_NAME} PRIVATE MANIA_MOBILE_TOUCH=1)
++endif()
++
++set(IOS_ICONS
++    platforms/iOS/Icon-60@2x.png
++    platforms/iOS/Icon-60@3x.png
++    platforms/iOS/Icon-76@2x.png
++    platforms/iOS/Icon-83.5@2x.png
++)
++
++set(IOS_BUNDLE_ID "com.example.maniatouch" CACHE STRING "Bundle identifier")
++
++set_target_properties(RetroEngine PROPERTIES
++    MACOSX_BUNDLE TRUE
++    MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/platforms/iOS/Info.plist.in
++    MACOSX_BUNDLE_GUI_IDENTIFIER ${IOS_BUNDLE_ID}
++    RESOURCE "${IOS_ICONS}"
++    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER ${IOS_BUNDLE_ID}
++    XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "15.0"
++    XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
++    XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
++    XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
++    XCODE_ATTRIBUTE_ENABLE_BITCODE "NO"
++    XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC "YES"
++    XCODE_ATTRIBUTE_COMBINE_HIDPI_IMAGES "NO"
++    XCODE_ATTRIBUTE_GCC_OPTIMIZATION_LEVEL[variant=Release] "2"
++)
+diff --git a/platforms/iOS/Icon-60@2x.png b/platforms/iOS/Icon-60@2x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..36f929415d8a240d3616c9b79e5035078ee1226b
+GIT binary patch
+literal 6235
+zcmV-h7^LTkP)<h;3K|Lk000e1NJLTq004LZ004Lh0ssI2wg#bv000;wNkl<Zc%1EB
+zYph*IbzW;`pT|AN*RR-dLJ}S!Hi0xxUcp2Vf{<ETirSL21gffPRrN<zq5gnYq7SwI
+zs;X21RTU~y)lyIqg;Z)v+5iD6un`nU41tgk;uvDbPI7(kIcJ~!nzj04_G4!D<Lq<p
+zxz{GSBm4U9y=Sjk^Ua#|nwf2U@!KASqA(V}rhgHvTfq4p&L5z@EN%dr7XZNQ($Q~m
+z6`ib>b(xd3ZkS{NxQbx_<Qj&Hdo~^2akefC%3Q;6`bvpm0ATPcIIe@Zf#bFi8<ZO%
+zuAl>q3qah^5a)MHx(h-KT*a_a#k)WdJAIf1vDNYxLF|m>rXjX_>XmOfnqip`+nu)>
+z;;KHly28ektLPLwS5M(;hD+0>zM;7x)_1%Y8pLIFywwovOK%evZ}t>k2E?s(MIFRO
+z=UpM-Dmq3h6=PXvqHD)8edO&xywwnAs>9`YGrFSM5Vhra0f_B}T0y*Qzpa{KYb-hS
+zIxei=wmgWf>9TEpTZQhenl9dsYh2Cn@*vJt$1)(ETOBuY+}f#_(=~2xs0GA^Mk+&G
+z&2ZL=XSK8)5I=uh<MeVC#JYHGoQkc1xV5gRgSf%sm8S6Qv7GHxRIyj*q_IoK!{@u-
+zwhV}&!Ec)hvHm5G3}2x6wl)^8tq)!Uv99GU%c<B(*SOi@Z6U<%oeH}lwrep0c=p})
+z`8G#a%)@cb6rLYqXtH>l&bKXK@k$<TfoGPFej)j7Xup|0Uoyn*wDY#fsaU{ot5?UZ
+zAudP=V1dL4L?TWku>fEJECoqH0+|t*(Grn%5ZCDnheJ21^!$TZA~8c4b%MAf1r7V*
+z{?*B@et^hvA~z;0qiH{gI-a1FUeu9_7@2AqUI=2%vz=6GfOxqU&sO@2`E4`Ru|Nif
+z(PTvmy5`C=M_={BS0DND)t8;SWOY2~M+lrKx$du=es0ghC$Bj6@HOB5;Y-h*Umf(K
+zekWEWmIZOzoon85;`s+L0C<8X(=GzM<>v3*b^Ebful-SXbpni#NFWJ>DK~;aDv%14
+zeCo`>|2lr-zd!K$$4?*FJ)8<;V%$8$>05{2a-!DOH$ZG#yo<_jLtue?emuD8>L=fK
+z=e@Vx^e`Yp*i}jb03u^fSGT~xfQT$Q3G~AA&+hxDd*A%e_uZyQ40@4LXi}aHv29m#
+zhVk(2Czk8CEdydl9k+!T7z8o^kNlPQy!ERexci>|a7vQ_0H7cnl#0TPL?}B641#Zb
+z`;~w8(K}C_+qXIhloAbon}tIa#Ob6weEUPs7uOgNnVBa+|4-j@&wJnTd6@Q<l2T9^
+z(}u!~L_+SGoIAJweSiB~-+An+JwsoSfJGtJMPR`+>mOL^JnGKdx}xZOCddUH{T6Fz
+z9Cd7srK2m59YMAm%KG3cw=@7@1op$;U;O50-uuq`)p*Dx=0#cS7Ach)4-W2M|NHlU
+z?8cWrIiB{VpeA)}pzPwA-eFM%u?3CRVFtw924XBhTxfQlAL7b}42S_h3OYX?{Qld&
+z`0jUnA=%g^1-XIAJVi=U)83vvlMlV`<A?UGhoL8tY^})1rfp|ekZnBE88IKkhB|h2
+z1(#zy3t}ii3?+!61Tj>OrEw_*ji<dg-SC4yyz5>y9>`5VoEIrc`TaweKl4|=^I0l*
+ztc4h}?&N}O;vgK3TS3fhL(DeBT+k^&Y)7|@T%waZt(LAZIINm3O5vazeemx85K<wD
+z&B(G@q*Q7&xb^iX-gWyo)+Z}csFo1BkTP3tIV=V-lpzKiVsIgb#UXZe4zLt7@>hQS
+z_TyK-{G^)p#r%4?p$Neoc7N}kU%qVbMiNU*Rq`AVBj>6k$F!s+v#UmkxePJe5IbX8
+zBNX#Ptj&Frh<&@pci(Z0;|_}D$Z~-cGDV$(SDbzO(FZ3%Paw?;u`Z&3*ywzvAu^#U
+zI~DC9cD>^or=l&yz#s)pg6<oyd-TeyPIK55OHvwUL10e2UwY$%gI-7^3Tx30V$HB<
+z197ucVYRfF-{v-y)@p`0qr(Vz$ITD3;N@csptT2tox?AA>J=|J6GWasDmxV!G8GW(
+zZknp2BF1auw-pdC>QvPGZD2N3f*1rqqU7FPlUoiyfw8w0;;ajiki+nnBTqz;#G(tW
+zAO;3tw)aN^loUly$d1I!peCCT3nYWuX0MD^%!m|`qPX+YLu;4qUx!34%h{+d46l6Y
+zX(8AN=+K==)%(r8vJ{)OpgP|MV0C``7V%1f8LLDd+IL>|L)sbzow3S5;_?IQJue}n
+zky?~XV&TEhD8vj1AP|V~;GQu^#f-3ZKqG(>`&K9YUaXWz)pVKR>Y2xSyTP2>3aTN7
+zrhJ=`TWJe%jjpKDNbE@hdmOf?NWlV`n9=S-rLHh<nfs$_)$ykCZLT`rEX0-egJx$y
+zms6M#OvTX-;#_t73`4A!1fN|WZnY(329$Juv=T&}ZYN=LR?UJqQyl=yaw=w~r<cFK
+zjX(-|dTlp_ovpKkDGP$mJhvx`WxpE{7wPGi=1t5@X|_)W0klnNS`FE*u|+n0%b=6S
+z{b?)A*zF{zpV@nEZ4Y?L-8r$`g7CwWhlnt9=c^d5POcUCXfSU<1H`S9L1s%Z17dK)
+zB@1GxggCF+k;!u#!-pQfk~=YN8PEcWgYI`8xvC=-yMjCeVx12W)-5+vVf1`S$)GBT
+z+vQGei1TTO0L1vEZ(WOkTLd#PLN7V_<fY$#{PLAv#DtaewGLuk#GLsySQuh3HB!c<
+z12L2!F4S>WtiX(c6b^gAS06fj?(_ld##^C1m=HV3eaBukn)JLP2WzTC$9@zkr@Z50
+z7Q`(V@#e_4RjA_(;s$kW^&zXJTj_f0?Aq?neEHSbi<a){F{9`t8|U`k`;{99{fJT@
+zy54@&%vWLFvY^?*eA|K$+m29iNsPNzrl0tqTc194NTgUStq>s&!jJ#w8-DWizFsHR
+zenUOPW@u*dA<9~EbL*rAoo0w(QHa@Pm>IgBT3a9f%_n{yC0QZG=89564ukJMboD1c
+z_uAFrlt{FO*o+$(nMK(U6_-_hTiL0o@!QNQ4Nk?TAkOWFQeyYe|J<?b|Mi|XdwV8{
+zl8a(n6e1ye@pxnS=l}4_Q7k2LE-?keEg;TR2Q=FH78Y-o-&W^TEC=HJl1S_x1Rwgh
+zw|((}S9^O#i4w4hLL@{diIn`{-~H<2PaYhm+J6y<^|e^;I;jcqET;mjhO*)~71a<!
+zg`=s{)1FWt_{h8Nf8aIV-Z3#QW*e0fVkHb>`Nw~K*H^xIWX~>NStwgh#Y~8^qZI|m
+zu&k73n@q)wh8XN|GRRgk46J91CrAMQ$%lXK<mpR(_gxPFvhsT<xJ`i03`9aol6xjU
+ze(Z|B{Kz{`Joci!yC?bNaCUdPI5ckQ#~Y3wccIz#!;Z5Wngwz8L(|dOrH%2*?YBJg
+z2Y26p<j5(AC5K&NL|{Y!ED+JAT{|k$Q?L>ye*d%g-}2E<y?K4y-!%x85@m?z*dfo^
+z<qb!VwMzzV3B;~kR0(qZba5dzTaiMICjDVQ`o%YW=U49d)+?@l3c3j-0um1hnGke3
+zU+<6ZC;*<Ut$yYIj(qBKuYKr|D+eo~=TVy3Sju;~ZajMI`2;Z-%S%GAA{<Y8tAp_R
+z!>4Y$>9HG*oVxPT^Sg(E>?D8;N(5o|ne)TPPF?!-hhFyehpv9|sr}NUVLv1mDN>t<
+zSoh_|H+;>xWpG^TL(>dOA1wu9Xjl?!Sg&yx@fZQ5AVp#tbdyB%d(pn#{=QXzbr>LU
+zoXGPVgSCypXxt~lUN7!-V@QqJvcAieUfPH53wGy%IPLsJ1#$kCQUZX7D**yCi;dCB
+z+WJ5d0)s%1f;_2q4Fd!wM%G7H>P}}a1hM|%Eyby*o<R*3Zy~3mf{wn^Vkw$QJF)C}
+zs#CPZoNe?+D3TaiL+v28bw!<W^UTg)w0>I!9et<uYJbr-<*l*)r69XC5bL{oyTP_t
+zJg(}4HI}V7PV2PWwqo8|<YS-hPUTd25H7>s+(NMc#5IDvNvFbPc)1X}f?N%8dA?RK
+z3~YXz)M%-G-d$LWw+O@+&G%GuuftMO7n|Q!YUqMM>@eJ3B|>Tpu@>T#t(qA$Kg6Z!
+zB80K&hY>AS(2{_3MNpH?hlT+G3kLPO8JQGmOmAt1Ijx>CT)c}#E2(4^u{s-+^%!!B
+zHX5xkGjp{{^zcGJ4C%Hxo{SUb_IiJ|AlFP6YrZbvRJ1X70Nm}0UN>KQu-Nm;x0dHr
+z)XqCZh-2#Y#L?Rh42K?*HKdj5*zSBGytWdrVz`cu(bIaK-A9$M0H-tNM?YBq>B(__
+zMY1z^rTx)c4zZqoDxuX??~mSp?ay7mhpN~3(0DP!w4(FXV4zLHl)e@;nkrQZa`DU`
+zCm;LJiEsYznU#T;%5~--+M65~vUu}^Ir?`Drs}TWc=1g)?|t@MC}b7RCJ(K!G1;pp
+z)m$2DH9-sj07N_(cJBP`BR_cX*)UL2fVoA_+YH1DIu!^)z~xu;gFvA`A<D?uB3w5R
+zRi#o_%phS|-#W6h=?H=0G}*PgyJv6r%ugm>w>Y+vZa3JXMZA=bzO;{tG4sRUU0+%8
+zWQ91-DZp7P=)%AYkgB2FPTw%E?(LpFHGbyIw9^sU&auqDas+unh^rRyDj^17A|4F9
+zFZ}nJdp>=Ni1Q7L>7VRhu#aVy`&xge9mG|wRMlujiWv~`(eIuAmk)n0i4_V1QVrT`
+zUiYQ+dP#oU%;-Z?X5uK~%P;Tu2QvNAOJVs8wT?L{EK3&Fe+7rzMUt-NXEdsD?$y*=
+zos2yMU^x5KBnnlxm!8Bkv&}|6x+&i_=OSJM#Q9PVV!w}P&jy_BvMP<GArX3PZ1&J-
+z$~cl{L7d&;!VhWmo#wMTrNz}wS9JT5(<Ay;L*5eoww4fsQMube0Fn7XoT(fx`pl-N
+zn?lXC(#K^w*<~?ZEV730#QEqTm}6ven2UcFW#;cPfO2+Wq?End)r59Vh2tHzgt(aC
+z1X@iRfd@h61#y0vvB#xdnij{_F&@g^(v?g)!1-mi&B~;sHIk|EO?1uNskxD*`4F3(
+zR4Qt=hd6Bx0Z^dp2I&CFOdx1!Vslu~8k_VDTTc|eIRcst=vNDMWONk^Es5Es`Bb-$
+zHp6MY4KwL2n$+ttSTw_#{AUva0RSjFy=)2}l)g<mr;^GeNdzXIPLdqb_8KXZ!6MAb
+z<rMQ5Yb>5?IZX~rT5|Rhgx!jvi=B>Jh?#Vlx!;#Um|r8vRfj=qL8k(N6m>e{?eBQe
+zq03g3BDBWF?Xc55o2*sJqg7H$GsqgmE%_?<w2Fc~FH4n8SA+qi#IvU-$3Op*I3gYH
+znq%N?3Svm#C4xKO{gR`%9SEn|g=|^44q~Y2ei^$Nl*>1ax6Eu*8E7nB*mbIghM0SO
+zdGOHS)BpH=DeW_#=@-#$0&_VPh!Dqo@L=z{>vo@iF0AW!sWb`lCLpc?z=gQ6vRzz3
+zp7loHC)eJ1$$>*F&z|-3;L!XwX-cc!Ew6Vf7^DDy68n>6|0UfZpjk(DQuW&;$mmus
+zb-R{q`F2%HHI<E0(iLbkR>c8xe?_jH3#Q{(>hGc&Nu_jubp1zYim<ryJ0QU92^f!(
+z&wl#U`g$xx#-@{i!1Q<+A|Qg$N2tn43brcePci%BQpUWpORc!=)+|*v{@CoXYXlnJ
+z0+s?c*1~%~`RI5QNr_k-Q0HtZtI=<(c8v`+LJYm0`0j&iPd+i;ySK~6(S~Llo!`xu
+znW`HqRj!$Knqf2Cu&dQM72w2pF3%Mz)U~Uuvv=#y1*7v}zbDyPWYKkM_D9dTzYQ3A
+zJ?W2=(fP<+!pnIocc97to9$>;jinwcw%W6}&ECyD>J&t0#SRTe*x(3_AgY2rWMJ?l
+z_Ie)M-$4S%R#>cC3+-<M24<2HJSpr7`s21acW8vsoav`5*o7ict_sIZc1nT_m^oqA
+zi)gfB(8+yw9o9Qhe(uNTTbYc@0%9v1&l=(!<s4%DueT7y#(0_{W`(V}a9FXg4xNmK
+z$kqgu^PZo%u8){Z6Yb<P*$#8;a~=*B;Dpg8DYiwM?U|R3R^e~gYb4K^Ba1;?qbsU3
+z1KXDdPv%TSge0LfYm=s{Q=zVxufjXd@=7LNXbcQn6RUu@Nh!_bS?`zdJi+b>Hpn(P
+z))}G;w7-oRRKoi%=}Lj66YgL$Tw<@uPTKq!PfC4vdJ1M1F>lDZgNRY6Mr(oBDNfku
+zRlI8HyKq|wwVu1<7p}POhJA|koy<HLW^GnvsO8I)Y4>T}YqbkkS=PMa*bxJK{qv_z
+z9Dlmo6Kp3I-Tl!Qc7K~di~{wtBda&R?m!r*Y~7X%8pYq*&Z1G-Y`#pY^qean<u9fV
+zdQI!h(DCr~Z@u#5BWsh5NP6iR%si=7hw_EmLdYs1W)>pfca^6!t9xkEvFBAykm<Zw
+zJvQcx`hQhuW`J2r3=<-iO>qOy{8K*-7SGk|*(=uNrXbE5Vuo%{{Pc;**B&@?{Vn^M
+z+4Op?o)>MJo`8Gyr0Nyx<%XwDTvmS39y&$<rTF;$rzRUww`-~n1^|5H&G$Jx)jJi-
+zG|&#jPS4|*1_MvJssrX!Zsug2;RTiAqx${PsYp2Un-MV%RX9z$U6DP-EJPQjq*67<
+zb6Grh+gYW>gBpnSKi!Uq0<}DiRMQYw(WzPi$UF^eLn>yPD$R~C3eg$%d#wFCRtyPo
+zl5mu8<hjsXXozz!NJ?W3Dg`lLcPi9znu>%%ho@0Pp>x>O@Y#Bx;gaXHIqPXLK8PsN
+zTodaUGPe{&pokO2iQ+KfAmJcN{FtW^`4RguPh*}Y94U?z#6~`PQxI3n7uo}8@LxhX
+z*E#5pfvGF7G+OA;$y&*^8AERRIbGb%1v$&?Apo*W0nNsXftVF>l2D{Lig}uF5V4=I
+zAMrG%NzBujgM>rHv4WUE5mPZjDXBCY=xq_iy2LR7r~Av%3S^5E2dC0kxostnX^r`7
+zplm!V<gxfY?I;S=KZHaf1g4+bW+o!ygg8z(RvaW8#Oz1p$66lAk9nG;QW+D(#EOf>
+zbxj))L<%c(WMR2Yg~i2ogQfdzh>*neqN@h4c;#NUNmXgdCexoan&DYoVx}MwQ3xR<
+z3Pd3=`(PN8q9jS;C<=op2tt1{T_5|S(PU#h9gY2s(PSg0X~KcxNO44v5K{?Ck*BFW
+zltvFs^P0+mV_wbT{x^He@!ODzcx51Oz3tF&=qXi-<gC$kNtqqM97hz0dh@A3y|ICr
+znUqqoilQhC!s#^hC)2S;aO`hP{L#qYm`un1bP`5E6i0CqDN@9w|97lZ9x+e%d!FS?
+zvLy}$1PwA#TkQX4Z}SkRhDd|Wq&U-5sSlKGR4X_}NY^uTZy^;(OoMTvBuU~V3d10b
+zf=Mu$_@lAEF`lfCCL5FKXzY(B!FU?@K@`Mslq9ht#roK0Ch2-?gg`{kLl1<bz*~vr
+zCQI}FXs2D*sVG65qO8M=U`ofn{M0qq?#-y>i$s`ZflZqeD-JXBJ@JFlXuLl0$76qE
+z?2r6lJPrIX4&yjVR7`pksvaUCM24mi*z5J2(?e|Poa{@RTY%(@;?3{3<vBoW*C7HT
+zNGMD#dR<&QOUF+?2S`jw2IW*y5c4FVNlcT3CJ9Yr@)b`L4v8b;gh4SAr@MeK15rz*
+z=*d2s-b^l-DTdCrv5TdYl1jz|&mDtILiA@JC8Czc?88?;%*3214ipE9f`q4u29d`a
+z%7p!d0^(3{%#aYPYz82JHee_~NI-yYNhC{9UI>xgWbqhOHm|j_AOHlSNW-2qc|gpH
+zIaU;EsZ3~^&^Vz<Ok+iUOuiyN;ea?K)^1Q9*Jb(_1%N<608fHv+MGft)60udBsW<+
+zPYi&yR3=2R;z;pS(NvKi(<GsBLgR$|gnUK5;y`gk9CPYX7S1_n?*Ie<3hW?sjaHoX
+z(Jiz&7j5xQZ`_xVpQy2-saBw*p#;T1kgZQ<P>R&1p|ta|Whh@*IL<7%@6y*~F_h4@
+zC)d9wlm>7+2rg1QPYeJYmnZ+6=nke!D;_tVOWG;RDx3O%=T2!~c7WcdvIF!sl^vkB
+zsq6r~O=Sn@Z7MrJZ&TR;dYj4)(A!jYfZnFE1N1hP{|7>i58D~33yc5&002ovPDHLk
+FV1j815vBkD
+
+literal 0
+HcmV?d00001
+
+diff --git a/platforms/iOS/Icon-60@3x.png b/platforms/iOS/Icon-60@3x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..01ed4917500d5f7fec83e965d0117bf05a54257d
+GIT binary patch
+literal 9768
+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
+zLJ6<ByzJ8<>jFI@?Tzd+^o5<@w*%0DVpSPmq3}|<WufVp=w|N!j9NZS3@!?WWB8#L
+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
+C?S%*c
+
+literal 0
+HcmV?d00001
+
+diff --git a/platforms/iOS/Icon-76@2x.png b/platforms/iOS/Icon-76@2x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..df156589e244d082fb61c24eeef8c792f556b18e
+GIT binary patch
+literal 7990
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/platforms/iOS/Icon-83.5@2x.png b/platforms/iOS/Icon-83.5@2x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..feec2f7436c1140e0c3fd9d148dc5bbda313df89
+GIT binary patch
+literal 8930
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/platforms/iOS/Info.plist.in b/platforms/iOS/Info.plist.in
+new file mode 100644
+index 0000000..32b38ea
+--- /dev/null
++++ b/platforms/iOS/Info.plist.in
+@@ -0,0 +1,91 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>CFBundleDevelopmentRegion</key>
++	<string>en</string>
++	<key>CFBundleExecutable</key>
++	<string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
++	<key>CFBundleIdentifier</key>
++	<string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
++	<key>CFBundleInfoDictionaryVersion</key>
++	<string>6.0</string>
++	<key>CFBundleName</key>
++	<string>Mania</string>
++	<key>CFBundleDisplayName</key>
++	<string>Sonic Mania</string>
++	<key>CFBundlePackageType</key>
++	<string>APPL</string>
++	<key>CFBundleShortVersionString</key>
++	<string>1.1.1</string>
++	<key>CFBundleVersion</key>
++	<string>1</string>
++	<key>CFBundleSupportedPlatforms</key>
++	<array>
++		<string>iPhoneOS</string>
++	</array>
++	<key>CFBundleIcons</key>
++	<dict>
++		<key>CFBundlePrimaryIcon</key>
++		<dict>
++			<key>CFBundleIconFiles</key>
++			<array>
++				<string>Icon-60</string>
++			</array>
++		</dict>
++	</dict>
++	<key>CFBundleIcons~ipad</key>
++	<dict>
++		<key>CFBundlePrimaryIcon</key>
++		<dict>
++			<key>CFBundleIconFiles</key>
++			<array>
++				<string>Icon-76</string>
++				<string>Icon-83.5</string>
++			</array>
++		</dict>
++	</dict>
++	<key>LSRequiresIPhoneOS</key>
++	<true/>
++	<key>MinimumOSVersion</key>
++	<string>15.0</string>
++	<key>UIDeviceFamily</key>
++	<array>
++		<integer>1</integer>
++		<integer>2</integer>
++	</array>
++	<key>UIRequiredDeviceCapabilities</key>
++	<array>
++		<string>arm64</string>
++	</array>
++	<key>UILaunchScreen</key>
++	<dict>
++		<key>UIColorName</key>
++		<string></string>
++	</dict>
++	<key>UIRequiresFullScreen</key>
++	<true/>
++	<key>UIStatusBarHidden</key>
++	<true/>
++	<key>UIViewControllerBasedStatusBarAppearance</key>
++	<false/>
++	<key>UISupportedInterfaceOrientations</key>
++	<array>
++		<string>UIInterfaceOrientationLandscapeRight</string>
++		<string>UIInterfaceOrientationLandscapeLeft</string>
++	</array>
++	<key>UISupportedInterfaceOrientations~ipad</key>
++	<array>
++		<string>UIInterfaceOrientationLandscapeRight</string>
++		<string>UIInterfaceOrientationLandscapeLeft</string>
++	</array>
++	<key>UIFileSharingEnabled</key>
++	<true/>
++	<key>LSSupportsOpeningDocumentsInPlace</key>
++	<true/>
++	<key>UIApplicationSupportsIndirectInputEvents</key>
++	<true/>
++	<key>GCSupportsControllerUserInteraction</key>
++	<true/>
++</dict>
++</plist>
