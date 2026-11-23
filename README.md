@@ -36,7 +36,7 @@ There are two patch sets. Each one has a patch for the game repo and one for the
 | 1 | [`patches/1-ios-widescreen`](patches/1-ios-widescreen) | iOS platform build, fullscreen widescreen output that follows the screen's aspect ratio, saves in *Documents*, `Data.rsdk` lookup, **Heavy Shinobi arena fix** | — |
 | 2 | [`patches/2-touch-controls`](patches/2-touch-controls) | Context-aware on-screen touch controls | patch 1 |
 
-`./apply.sh <decomp>` applies both, `./apply.sh <decomp> --no-touch` applies only patch 1 (e.g. if you play with a gamepad).
+Each folder has its own README with details. `./apply.sh <decomp>` applies both, `./apply.sh <decomp> --no-touch` applies only patch 1 (e.g. if you play with a gamepad).
 
 ## Features
 
