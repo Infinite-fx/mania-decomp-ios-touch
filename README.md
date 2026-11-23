@@ -109,6 +109,12 @@ Never share an `.ipa` that contains `Data.rsdk`.
 Sign and install the `.ipa` with any sideloading tool that works with a free Apple ID (for example [Impactor](https://github.com/khcrysalis/Impactor) or [iloader](https://github.com/nab138/iloader) — both run on Linux, Windows and macOS).
 With a free Apple ID the signature has to be renewed every 7 days. Enable *Developer Mode* on iOS 16+.
 
+## Bugs & suggestions
+
+This is **not** a RSDKModding project. If something is wrong with the touch controls, the iOS build or the widescreen fixes, or you have an idea how to make them better, please open an [issue here](../../issues), not in the decompilation repositories.
+
+Bugs that also happen in the official game or the unmodified decompilation are out of scope here.
+
 ## License
 
 This is a derivative of the decompilations, so it follows **their** licenses — see [`LICENSES/`](LICENSES/):
@@ -131,3 +137,4 @@ In short: **non-commercial use only**, credit the original authors, **no game as
 - **Файлов игры здесь нет.** Нужен `Data.rsdk` из **своей купленной** копии игры.
 - Сборка в GitHub Actions идёт без Mac, с отключённым Plus, как требует лицензия.
 - Только некоммерческое использование.
+- Нашли баг с кнопками, iOS-сборкой или широким экраном, или есть идея, как сделать лучше? Пишите в [Issues этого репозитория](../../issues), а не авторам декомпиляции.
