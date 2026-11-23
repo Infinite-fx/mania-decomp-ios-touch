@@ -16,6 +16,10 @@ env:
 jobs:
   build:
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [touch, no-touch]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,7 +34,8 @@ jobs:
           git -C dependencies/RSDKv5 checkout "$RSDK_COMMIT"
 
       - name: Apply patches
-        run: ./touch/apply.sh decomp
+        run: |
+          if [ "${{ matrix.variant }}" = "touch" ]; then ./touch/apply.sh decomp; else ./touch/apply.sh decomp --no-touch; fi
 
       - name: Fetch dependencies (SDL2, libogg, libtheora)
         run: |
@@ -63,10 +68,10 @@ jobs:
         run: |
           APP=$(find build -type d -name "*.app" -path "*Release-iphoneos*" | head -1)
           mkdir Payload && cp -R "$APP" Payload/
-          zip -qry ManiaTouch-unsigned-noassets.ipa Payload
+          zip -qry Mania-${{ matrix.variant }}-unsigned-noassets.ipa Payload
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ManiaTouch-unsigned-noassets
-          path: ManiaTouch-unsigned-noassets.ipa
+          name: Mania-${{ matrix.variant }}-unsigned-noassets
+          path: Mania-${{ matrix.variant }}-unsigned-noassets.ipa
           retention-days: 30

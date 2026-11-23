@@ -27,6 +27,17 @@ The decompilation is **not** my work. All credit for it goes to its authors:
 
 What this repository adds on top: the iOS platform files, the touch controls, and the small game-side hooks/fixes listed below.
 
+## Patches
+
+There are two patch sets. Each one has a patch for the game repo and one for the engine submodule.
+
+| # | Folder | What it does | Needs |
+| --- | --- | --- | --- |
+| 1 | [`patches/1-ios-widescreen`](patches/1-ios-widescreen) | iOS platform build, fullscreen widescreen output that follows the screen's aspect ratio, saves in *Documents*, `Data.rsdk` lookup, **Heavy Shinobi arena fix** | — |
+| 2 | [`patches/2-touch-controls`](patches/2-touch-controls) | Context-aware on-screen touch controls | patch 1 |
+
+`./apply.sh <decomp>` applies both, `./apply.sh <decomp> --no-touch` applies only patch 1 (e.g. if you play with a gamepad).
+
 ## Features
 
 ### Touch controls
@@ -64,7 +75,7 @@ Classic layout, nothing on screen that you can't use right now:
 
 1. Fork this repository.
 2. Go to **Actions → Build iOS → Run workflow** (or just push a commit).
-3. Download the `ManiaTouch-unsigned-noassets` artifact.
+3. Download an artifact: `Mania-touch-unsigned-noassets` (patches 1 + 2) or `Mania-no-touch-unsigned-noassets` (patch 1 only).
 
 The workflow clones the decompilation at a pinned commit, applies the patches and builds an **unsigned** `.ipa` **without any game data**.
 As required by the RSDKv5 decompilation license, it is built with `RETRO_DISABLE_PLUS=ON`.
@@ -111,7 +122,10 @@ In short: **non-commercial use only**, credit the original authors, **no game as
 
 ## Кратко по-русски
 
-Неофициальный набор патчей к [декомпиляции Sonic Mania](https://github.com/RSDKModding/Sonic-Mania-Decompilation): сборка под iOS и сенсорное управление (крестовина, прыжок, контекстная кнопка суперформы и смены персонажа, пауза или пропуск сцены), а также фиксы для широких экранов.
+Неофициальный набор патчей к [декомпиляции Sonic Mania](https://github.com/RSDKModding/Sonic-Mania-Decompilation). Патчей два:
+
+1. **`1-ios-widescreen`**: сборка под iOS, широкий экран под пропорции телефона и фикс арены Heavy Shinobi.
+2. **`2-touch-controls`**: сенсорное управление (крестовина, прыжок, контекстная кнопка суперформы и смены персонажа, пауза или пропуск сцены). Ставится поверх первого.
 
 - Декомпиляция — работа её авторов (Rubberduckycooly, chuliRMG, Evening Star и другие), ссылки выше.
 - **Файлов игры здесь нет.** Нужен `Data.rsdk` из **своей купленной** копии игры.
