@@ -24,4 +24,4 @@ Files: `sonic-mania.patch` (game: `HeavyShinobi.c`) and `rsdkv5.patch` (engine: 
 
 ## Bugs & suggestions
 
-Something looks wrong on your screen size, another boss arena breaks on a wide screen, or you have an idea? Please open an [issue in this repository](../../../issues), not in the decompilation repositories. Mention your device model and iOS version.
+Something looks wrong on your screen size, another boss arena breaks on a wide screen, or you have an idea? Please open an [issue in this repository](https://github.com/Infinite-fx/mania-decomp-ios-touch/issues), not in the decompilation repositories. Mention your device model and iOS version.

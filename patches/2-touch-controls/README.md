@@ -29,4 +29,4 @@ Context-aware on-screen controls: only what you can use right now is on screen.
 
 ## Bugs & suggestions
 
-A button shows up when it shouldn't (or doesn't when it should), something is hard to press, or you have an idea for the layout or style? Please open an [issue in this repository](../../../issues), not in the decompilation repositories. Screenshots help a lot.
+A button shows up when it shouldn't (or doesn't when it should), something is hard to press, or you have an idea for the layout or style? Please open an [issue in this repository](https://github.com/Infinite-fx/mania-decomp-ios-touch/issues), not in the decompilation repositories. Screenshots help a lot.
